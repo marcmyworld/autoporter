@@ -1,0 +1,5 @@
+system/bin 0 0 0755
+system/etc 0 0 0755
+system/bin/my_custom_script.sh 0 2000 0755 capabilities=0x0
+system/bin/sh 0 2000 0755 capabilities=0x0
+system/etc/sample.conf 0 0 0644

@@ -59,7 +59,16 @@ def get_workspace_overview() -> Dict[str, any]:
 
 
 def display_workspace_status():
-    """Prints a styled overview of the kitchen workspace."""
+    """Prints a styled overview of the kitchen workspace for the active project."""
+    from core.project import get_active_project
+    active = get_active_project()
+    if active:
+        meta = active.get_meta()
+        disp_name = meta.get("display_name", active.name)
+        dev = meta.get("device", "generic")
+        ver = meta.get("android_version", "unknown")
+        print(f" {Colors.BOLD}Active Project:{Colors.RESET} {Colors.BRIGHT_GREEN}{active.name}{Colors.RESET} ({disp_name}) | Device: {Colors.CYAN}{dev}{Colors.RESET} | Android: {Colors.YELLOW}{ver}{Colors.RESET} | Path: {Colors.DIM}project/{active.name}/{Colors.RESET}\n")
+
     ov = get_workspace_overview()
     headers = ["Directory", "Role", "Item Count", "Total Size"]
     rows = [
@@ -126,14 +135,17 @@ def inspect_build_prop():
 
 
 def clean_workspace_menu():
-    """Menu to clean specific or all working directories."""
-    print_section("Workspace Cleanup Manager")
+    """Menu to clean specific or all working directories for active project."""
+    from core.project import get_active_project
+    active = get_active_project()
+    proj_prefix = f"project/{active.name}/" if active else ""
+    print_section(f"Workspace Cleanup Manager [{proj_prefix[:-1] if proj_prefix else 'Active Project'}]")
     options = [
-        "Clean 'cauldron/' (Unpacked work trees)",
-        "Clean 'finalized/' (Repacked partition images)",
-        "Clean 'images/' (Extracted image files)",
-        "Clean 'output/' (Generated super.img and OTA zips)",
-        "RESET EVERYTHING (Clear all working directories)",
+        f"Clean '{proj_prefix}cauldron/' (Unpacked work trees)",
+        f"Clean '{proj_prefix}finalized/' (Repacked partition images)",
+        f"Clean '{proj_prefix}images/' (Extracted image files)",
+        f"Clean '{proj_prefix}output/' (Generated super.img and OTA zips)",
+        f"RESET EVERYTHING in '{proj_prefix[:-1]}' (Clear all working directories)",
         "Cancel",
     ]
     c = ask_choice("Choose directory to clean:", options, default_idx=len(options) - 1)
@@ -148,25 +160,25 @@ def clean_workspace_menu():
                 item.unlink(missing_ok=True)
 
     if c == 0:
-        if ask_confirm("Are you sure you want to clean cauldron/?"):
+        if ask_confirm(f"Are you sure you want to clean {proj_prefix}cauldron/?"):
             wipe_dir(CAULDRON_DIR)
-            print_success("cauldron/ cleaned.")
+            print_success(f"{proj_prefix}cauldron/ cleaned.")
     elif c == 1:
-        if ask_confirm("Are you sure you want to clean finalized/?"):
+        if ask_confirm(f"Are you sure you want to clean {proj_prefix}finalized/?"):
             wipe_dir(FINALIZED_DIR)
-            print_success("finalized/ cleaned.")
+            print_success(f"{proj_prefix}finalized/ cleaned.")
     elif c == 2:
-        if ask_confirm("Are you sure you want to clean images/?"):
+        if ask_confirm(f"Are you sure you want to clean {proj_prefix}images/?"):
             wipe_dir(IMAGES_DIR)
-            print_success("images/ cleaned.")
+            print_success(f"{proj_prefix}images/ cleaned.")
     elif c == 3:
-        if ask_confirm("Are you sure you want to clean output/?"):
+        if ask_confirm(f"Are you sure you want to clean {proj_prefix}output/?"):
             wipe_dir(OUTPUT_DIR)
-            print_success("output/ cleaned.")
+            print_success(f"{proj_prefix}output/ cleaned.")
     elif c == 4:
-        if ask_confirm("WARNING: This will delete all images, cauldron, finalized, and output! Proceed?", default=False):
+        if ask_confirm(f"WARNING: This will delete all images, cauldron, finalized, and output in {proj_prefix}! Proceed?", default=False):
             for d in [CAULDRON_DIR, FINALIZED_DIR, IMAGES_DIR, OUTPUT_DIR]:
                 wipe_dir(d)
-            print_success("All working directories reset.")
+            print_success(f"All working directories reset in {proj_prefix}.")
     else:
         return

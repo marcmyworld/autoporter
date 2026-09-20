@@ -27,6 +27,11 @@ from core.ui import (
     ask_text,
     ask_confirm,
 )
+from core.project import (
+    run_project_manager_menu,
+    ProjectManager,
+    get_active_project,
+)
 from core.workspace import (
     display_workspace_status,
     inspect_build_prop,
@@ -64,7 +69,11 @@ def main_menu():
         banner()
         display_workspace_status()
 
+        active = get_active_project()
+        active_tag = f" [{active.name}]" if active else ""
+
         menu_options = [
+            f"{Colors.BOLD}Switch / Manage Projects{Colors.RESET}{Colors.CYAN}{active_tag}{Colors.RESET} (Multi-project environment)",
             f"{Colors.BOLD}Unpack OTA ROM / Payload{Colors.RESET} (payload-dumper-go / OTA zips)",
             f"{Colors.BOLD}Unpack Images to 'cauldron'{Colors.RESET} (Super, EROFS, EXT4, Boot, Kernel)",
             f"{Colors.BOLD}Synchronize Permissions & SELinux Contexts{Colors.RESET} (fs_config & file_contexts)",
@@ -79,22 +88,24 @@ def main_menu():
         choice = ask_choice("Main Menu Actions:", menu_options, default_idx=0)
 
         if choice == 0:
-            run_ota_dumper_menu()
+            run_project_manager_menu()
         elif choice == 1:
-            run_partition_unpacker_menu()
+            run_ota_dumper_menu()
         elif choice == 2:
-            run_context_sync_menu()
+            run_partition_unpacker_menu()
         elif choice == 3:
-            run_partition_repacker_menu()
+            run_context_sync_menu()
         elif choice == 4:
-            run_super_builder_menu()
+            run_partition_repacker_menu()
         elif choice == 5:
-            run_ota_builder_menu()
+            run_super_builder_menu()
         elif choice == 6:
-            inspect_build_prop()
+            run_ota_builder_menu()
         elif choice == 7:
-            clean_workspace_menu()
+            inspect_build_prop()
         elif choice == 8:
+            clean_workspace_menu()
+        elif choice == 9:
             print(f"\n {Colors.BRIGHT_CYAN}Thank you for using Autoporter. Happy ROM cooking!{Colors.RESET}\n")
             sys.exit(0)
 
@@ -108,7 +119,14 @@ def parse_args():
         description="Autoporter - Android ROM Kitchen & Partition Transmutation Engine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("-P", "--project", type=str, default=None, help="Target project name in kebab-case")
     subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    # project
+    p_proj = subparsers.add_parser("project", help="Manage or switch projects")
+    p_proj.add_argument("name", nargs="?", default="", help="Project name to switch to or inspect")
+    p_proj.add_argument("--create", action="store_true", help="Create project if it does not exist")
+    p_proj.add_argument("--list", action="store_true", help="List all projects")
 
     # unpack-ota
     p_ota = subparsers.add_parser("unpack-ota", help="Unpack an OTA zip, payload.bin, or ROM.zip with images/")
@@ -136,7 +154,42 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) > 1:
             args = parse_args()
-            if args.command == "status":
+
+            if args.project:
+                ProjectManager.set_active_project(args.project)
+                print_info(f"Target project switched to: {Colors.BOLD}{args.project}{Colors.RESET}")
+
+            if args.command == "project":
+                if args.list:
+                    from core.config import format_size
+                    from core.ui import print_table
+                    projs = ProjectManager.list_projects()
+                    act = ProjectManager.get_active_project()
+                    headers = ["#", "Project (Kebab)", "Display Name", "Device", "Total Size", "Status"]
+                    rows = []
+                    for idx, p in enumerate(projs):
+                        ov = p.get_overview()
+                        is_act = (act and act.name == p.name)
+                        st = f"{Colors.BRIGHT_GREEN}● ACTIVE{Colors.RESET}" if is_act else f"{Colors.DIM}idle{Colors.RESET}"
+                        rows.append([
+                            str(idx + 1),
+                            p.name,
+                            ov["meta"].get("display_name", p.name),
+                            ov["meta"].get("device", "-"),
+                            format_size(ov["total_size"]),
+                            st,
+                        ])
+                    print_table(headers, rows)
+                elif args.name:
+                    if args.create:
+                        p = ProjectManager.create_project(args.name)
+                        print_success(f"Created project/{p.name}/ and set to active.")
+                    else:
+                        p = ProjectManager.set_active_project(args.name)
+                        print_success(f"Active project set to: {p.name}")
+                else:
+                    run_project_manager_menu()
+            elif args.command == "status":
                 banner()
                 display_workspace_status()
             elif args.command == "unpack-ota":

@@ -11,15 +11,62 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BIN_DIR = PROJECT_ROOT / "bin"
-INPUT_DIR = PROJECT_ROOT / "input"
-IMAGES_DIR = PROJECT_ROOT / "images"
-CAULDRON_DIR = PROJECT_ROOT / "cauldron"
-FINALIZED_DIR = PROJECT_ROOT / "finalized"
-OUTPUT_DIR = PROJECT_ROOT / "output"
+PROJECTS_DIR = PROJECT_ROOT / "project"
+PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Ensure essential directories exist
-for directory in [INPUT_DIR, IMAGES_DIR, CAULDRON_DIR, FINALIZED_DIR, OUTPUT_DIR]:
-    directory.mkdir(parents=True, exist_ok=True)
+
+class DynamicPath:
+    """
+    Dynamic Path proxy that resolves lazily to the active project's directories.
+    Allows transparent path manipulation (/, str, glob, exists, open, etc.)
+    that instantly adapts whenever the active project is switched.
+    """
+
+    def __init__(self, getter_func):
+        self._getter = getter_func
+
+    @property
+    def _path(self) -> Path:
+        p = self._getter()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def __truediv__(self, other):
+        return self._path / other
+
+    def __rtruediv__(self, other):
+        return Path(other) / self._path
+
+    def __str__(self):
+        return str(self._path)
+
+    def __fspath__(self):
+        return str(self._path)
+
+    def __repr__(self):
+        return repr(self._path)
+
+    def __eq__(self, other):
+        return str(self._path) == str(other)
+
+    def __hash__(self):
+        return hash(self._path)
+
+    def __getattr__(self, item):
+        return getattr(self._path, item)
+
+
+def _get_active_or_default():
+    from core.project import require_active_project
+    return require_active_project()
+
+
+# Dynamic project-based directory proxies
+INPUT_DIR = DynamicPath(lambda: _get_active_or_default().input_dir)
+IMAGES_DIR = DynamicPath(lambda: _get_active_or_default().images_dir)
+CAULDRON_DIR = DynamicPath(lambda: _get_active_or_default().cauldron_dir)
+FINALIZED_DIR = DynamicPath(lambda: _get_active_or_default().finalized_dir)
+OUTPUT_DIR = DynamicPath(lambda: _get_active_or_default().output_dir)
 
 # Required binaries mapping
 BINARIES = {

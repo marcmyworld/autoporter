@@ -23,3 +23,15 @@ finalized/*
 
 output/*
 !output/.gitkeep
+
+# Active project state pointer
+project/.active_project
+
+# Project workspaces - ignore raw partitions, images, archives, unpacked directories
+project/*/*/*
+!project/*/*/.gitkeep
+!project/*/.gitkeep
+!project/*/project.json
+!project/*/cauldron/config/
+!project/*/cauldron/config/*
+

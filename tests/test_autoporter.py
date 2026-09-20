@@ -224,18 +224,18 @@ class TestAutoporter(unittest.TestCase):
         ]
 
         # Recovery ZIP
-        rec_zip = build_recovery_flashable_zip(parts, zip_name="test_rec.zip")
+        rec_zip = build_recovery_flashable_zip(parts, zip_name="test_rec.zip", output_dir=self.output)
         self.assertIsNotNone(rec_zip)
         self.assertTrue(rec_zip.exists())
 
         # Fastboot ROM package
-        fb_dir = build_fastboot_rom_package(parts, rom_name="test_fb")
+        fb_dir = build_fastboot_rom_package(parts, rom_name="test_fb", output_dir=self.output)
         self.assertTrue((fb_dir / "flash_all.sh").exists())
         self.assertTrue((fb_dir / "flash_all.bat").exists())
         self.assertTrue((fb_dir / "images" / "system.img").exists())
 
         # Payload OTA
-        payload_zip = build_payload_ota_zip(parts, zip_name="test_payload.zip")
+        payload_zip = build_payload_ota_zip(parts, zip_name="test_payload.zip", output_dir=self.output)
         self.assertIsNotNone(payload_zip)
         self.assertTrue(payload_zip.exists())
 
@@ -302,7 +302,70 @@ class TestAutoporter(unittest.TestCase):
         self.assertTrue((out_img_dir / "system.img").exists())
         self.assertTrue((out_img_dir / "vendor.img").exists())
 
+    def test_kebab_case_conversion(self):
+        """Test conversion of arbitrary project names to clean kebab-case."""
+        from core.project import to_kebab_case
+        self.assertEqual(to_kebab_case("HyperOS Chenfeng"), "hyperos-chenfeng")
+        self.assertEqual(to_kebab_case("Xiaomi 14 Civi (SM8635)"), "xiaomi-14-civi-sm8635")
+        self.assertEqual(to_kebab_case("My_Awesome_ROM"), "my-awesome-rom")
+        self.assertEqual(to_kebab_case("LineageOS-21.0!"), "lineageos-21-0")
+        self.assertEqual(to_kebab_case("   Spaces Around   "), "spaces-around")
+        self.assertEqual(to_kebab_case(""), "unnamed-project")
+
+    def test_project_manager_and_dynamic_paths(self):
+        """Test multi-project isolation, switching, and DynamicPath lazy resolution."""
+        from core.project import ProjectManager, get_active_project
+        from core.config import IMAGES_DIR, CAULDRON_DIR, FINALIZED_DIR, OUTPUT_DIR, INPUT_DIR
+
+        orig_active = get_active_project()
+        test_p1_name = "test-kitchen-alpha"
+        test_p2_name = "test-kitchen-beta"
+
+        try:
+            # Create project 1
+            p1 = ProjectManager.create_project(test_p1_name, display_name="Test Kitchen Alpha", device="alpha_dev")
+            self.assertTrue(p1.exists())
+            self.assertTrue(p1.input_dir.exists())
+            self.assertTrue(p1.images_dir.exists())
+            self.assertTrue(p1.cauldron_dir.exists())
+            self.assertTrue(p1.config_dir.exists())
+            self.assertTrue(p1.finalized_dir.exists())
+            self.assertTrue(p1.output_dir.exists())
+            self.assertTrue(p1.meta_file.exists())
+            self.assertEqual(p1.get_meta()["device"], "alpha_dev")
+
+            # Check DynamicPath points to p1
+            self.assertEqual(str(IMAGES_DIR), str(p1.images_dir))
+            self.assertEqual(str(CAULDRON_DIR), str(p1.cauldron_dir))
+
+            # Create project 2
+            p2 = ProjectManager.create_project(test_p2_name, display_name="Test Kitchen Beta", device="beta_dev")
+            self.assertTrue(p2.exists())
+
+            # Active project should now be p2
+            self.assertEqual(ProjectManager.get_active_project().name, test_p2_name)
+            self.assertEqual(str(IMAGES_DIR), str(p2.images_dir))
+            self.assertEqual(str(OUTPUT_DIR), str(p2.output_dir))
+
+            # Switch back to p1
+            ProjectManager.set_active_project(p1)
+            self.assertEqual(ProjectManager.get_active_project().name, test_p1_name)
+            self.assertEqual(str(IMAGES_DIR), str(p1.images_dir))
+
+            # Test overview
+            ov = p1.get_overview()
+            self.assertEqual(ov["name"], test_p1_name)
+            self.assertIn("total_size", ov)
+
+        finally:
+            # Clean up test projects
+            ProjectManager.delete_project(test_p1_name)
+            ProjectManager.delete_project(test_p2_name)
+            if orig_active:
+                ProjectManager.set_active_project(orig_active)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

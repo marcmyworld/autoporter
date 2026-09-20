@@ -66,11 +66,12 @@ def compute_sha256(file_path: Path) -> str:
     return h.hexdigest()
 
 
-def build_payload_ota_zip(partitions: List[Dict[str, any]], zip_name: str = "ota_update.zip") -> Optional[Path]:
+def build_payload_ota_zip(partitions: List[Dict[str, any]], zip_name: str = "ota_update.zip", output_dir: Optional[Path] = None) -> Optional[Path]:
     """Generates an official payload.bin using delta_generator and packages it into an OTA zip."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_zip_path = OUTPUT_DIR / zip_name
-    temp_dir = OUTPUT_DIR / f"temp_ota_{int(time.time())}"
+    target_out = Path(output_dir) if output_dir else Path(OUTPUT_DIR)
+    target_out.mkdir(parents=True, exist_ok=True)
+    out_zip_path = target_out / zip_name
+    temp_dir = target_out / f"temp_ota_{int(time.time())}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     delta_tool = get_binary("delta_generator")
@@ -119,14 +120,15 @@ def build_payload_ota_zip(partitions: List[Dict[str, any]], zip_name: str = "ota
     return out_zip_path
 
 
-def build_recovery_flashable_zip(partitions: List[Dict[str, any]], zip_name: str = "flashable_rom.zip") -> Optional[Path]:
+def build_recovery_flashable_zip(partitions: List[Dict[str, any]], zip_name: str = "flashable_rom.zip", output_dir: Optional[Path] = None) -> Optional[Path]:
     """
     Creates a recovery flashable zip with update-binary shell installer,
     compatible with TWRP, OrangeFox, and standard AOSP recoveries.
     """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_zip_path = OUTPUT_DIR / zip_name
-    temp_dir = OUTPUT_DIR / f"temp_rec_{int(time.time())}"
+    target_out = Path(output_dir) if output_dir else Path(OUTPUT_DIR)
+    target_out.mkdir(parents=True, exist_ok=True)
+    out_zip_path = target_out / zip_name
+    temp_dir = target_out / f"temp_rec_{int(time.time())}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     meta_inf = temp_dir / "META-INF" / "com" / "google" / "android"
@@ -214,17 +216,18 @@ exit 0
     return out_zip_path
 
 
-def build_fastboot_rom_package(partitions: List[Dict[str, any]], rom_name: str = "Autoporter-Fastboot-ROM") -> Path:
+def build_fastboot_rom_package(partitions: List[Dict[str, any]], rom_name: str = "Autoporter-Fastboot-ROM", output_dir: Optional[Path] = None) -> Path:
     """
     Creates a fastboot-flashable ROM folder and archive with flash_all.sh & flash_all.bat scripts.
     """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    pkg_dir = OUTPUT_DIR / f"{rom_name}_{int(time.time())}"
+    target_out = Path(output_dir) if output_dir else Path(OUTPUT_DIR)
+    target_out.mkdir(parents=True, exist_ok=True)
+    pkg_dir = target_out / f"{rom_name}_{int(time.time())}"
     images_dir = pkg_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
     # Check if super.img exists in output/ or finalized/
-    super_img = OUTPUT_DIR / "super.img"
+    super_img = target_out / "super.img"
     has_super = super_img.is_file()
 
     print_info(f"Preparing Fastboot ROM package at {pkg_dir}...")
