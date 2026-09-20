@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Autoporter OTA Dumper Module: Extracts payload.bin & OTA ROM Archives
+Autoporter OTA Dumper Module:
+Extracts payload.bin, OTA ROM Archives, and ROM.zip / Fastboot images
+with granular partition selection and automated super.img unpacking.
 """
 
 import os
 import sys
 import zipfile
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Dict
 
-from core.config import get_binary, IMAGES_DIR, INPUT_DIR, format_size
+from core.config import get_binary, IMAGES_DIR, INPUT_DIR, CAULDRON_DIR, format_size
 from core.ui import (
     Colors,
     Spinner,
@@ -25,6 +28,7 @@ from core.ui import (
     ask_text,
     ask_confirm,
 )
+from core.partition_unpacker import unpack_super_image, unpack_filesystem_image, unpack_boot_image, unpack_image
 
 
 def find_rom_archives() -> List[Path]:
@@ -44,14 +48,15 @@ def find_rom_archives() -> List[Path]:
 def inspect_archive(archive_path: Path) -> Dict[str, any]:
     """
     Inspects an archive to determine whether it contains payload.bin,
-    raw images, or is a standalone payload.bin / image.
+    raw images (ROM.zip/images/*.img), or is a standalone payload.bin / image.
     """
     info = {
         "path": archive_path,
         "type": "unknown",
         "size": archive_path.stat().st_size,
         "partitions": [],
-        "img_files": [],
+        "image_entries": [],
+        "has_super": False,
     }
 
     if archive_path.name.lower().endswith(".bin") or archive_path.name == "payload.bin":
@@ -67,10 +72,32 @@ def inspect_archive(archive_path: Path) -> Dict[str, any]:
                     info["type"] = "ota_zip_payload"
                     info["partitions"] = list_payload_partitions(archive_path)
                 else:
-                    imgs = [n for n in namelist if n.lower().endswith(".img")]
-                    if imgs:
+                    # Scan for .img files anywhere inside the zip (e.g. images/*.img or root)
+                    img_members = [
+                        m for m in zf.infolist()
+                        if not m.is_dir() and m.filename.lower().endswith(".img")
+                    ]
+                    if img_members:
                         info["type"] = "zip_images"
-                        info["img_files"] = imgs
+                        entries = []
+                        partitions = []
+                        has_super = False
+                        for m in img_members:
+                            p_stem = Path(m.filename).stem
+                            partitions.append(p_stem)
+                            if "super" in p_stem.lower():
+                                has_super = True
+                            entries.append({
+                                "member": m,
+                                "internal_path": m.filename,
+                                "partition_name": p_stem,
+                                "filename": Path(m.filename).name,
+                                "file_size": m.file_size,
+                                "compress_size": m.compress_size,
+                            })
+                        info["image_entries"] = sorted(entries, key=lambda x: x["partition_name"])
+                        info["partitions"] = sorted(list(set(partitions)))
+                        info["has_super"] = has_super
                     else:
                         info["type"] = "zip_generic"
         except Exception as e:
@@ -108,9 +135,7 @@ def extract_payload(
     selected_partitions: Optional[List[str]] = None,
     output_dir: Path = IMAGES_DIR,
 ) -> bool:
-    """
-    Extracts partitions using payload-dumper-go into output_dir.
-    """
+    """Extracts partitions using payload-dumper-go into output_dir."""
     tool = get_binary("payload-dumper-go")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -128,49 +153,96 @@ def extract_payload(
 
     with Spinner("Extracting payload partitions via payload-dumper-go...") as sp:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        extracted = []
         for line in proc.stdout:
             line_s = line.strip()
             if "dumping" in line_s.lower() or "extracted" in line_s.lower():
                 sp.update_message(f"Dumping: {line_s[:50]}")
-            if ".img" in line_s:
-                extracted.append(line_s)
         proc.wait()
 
     if proc.returncode != 0:
         print_error(f"Payload extraction exited with status {proc.returncode}")
         return False
 
-    # Check extracted images
     extracted_imgs = list(output_dir.glob("*.img"))
     print_success(f"Extracted {len(extracted_imgs)} partition image(s) to {output_dir}")
     return True
 
 
-def extract_zip_raw_images(zip_path: Path, output_dir: Path = IMAGES_DIR) -> bool:
-    """Extracts raw .img files found in a generic or fastboot zip."""
+def extract_zip_selected_images(
+    zip_path: Path,
+    selected_entries: List[Dict[str, any]],
+    output_dir: Path = IMAGES_DIR,
+) -> List[Path]:
+    """
+    Extracts selected .img entries from a ROM zip archive into output_dir.
+    Flattens any nested directory structure (e.g. images/super.img -> images/super.img).
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        img_members = [m for m in zf.infolist() if m.filename.lower().endswith(".img")]
-        total = len(img_members)
-        if total == 0:
-            print_warning("No .img files found in the archive.")
-            return False
+    extracted_paths = []
+    total = len(selected_entries)
 
-        print_info(f"Extracting {total} image(s) from {zip_path.name}...")
-        for i, member in enumerate(img_members):
-            dest_name = Path(member.filename).name
-            progress_bar(i + 1, total, prefix="Extracting", suffix=dest_name)
-            with zf.open(member) as source, open(output_dir / dest_name, "wb") as target:
-                shutil.copyfileobj(source, target)
-        print()
-    print_success(f"Extracted {total} image(s) to {output_dir}")
-    return True
+    print_info(f"Extracting {total} partition image(s) from {Colors.BOLD}{zip_path.name}{Colors.RESET}...")
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for i, entry in enumerate(selected_entries):
+            member = entry["member"]
+            dest_filename = entry["filename"]
+            target_file = output_dir / dest_filename
+            p_name = entry["partition_name"]
+            sz_str = format_size(entry["file_size"])
+
+            progress_bar(i, total, prefix="Extracting", suffix=f"{p_name} ({sz_str})")
+
+            with zf.open(member) as source, open(target_file, "wb") as target:
+                shutil.copyfileobj(source, target, length=1024 * 1024)
+
+            extracted_paths.append(target_file)
+
+        progress_bar(total, total, prefix="Extracting", suffix="Completed!")
+
+    print_success(f"Extracted {len(extracted_paths)} partition image(s) to {output_dir}")
+    return extracted_paths
+
+
+def handle_super_unpack_workflow(super_img_path: Path, output_dir: Path = IMAGES_DIR):
+    """
+    Guides the user through automatically unpacking super.img into its logical partitions
+    and optionally unpacking them to 'cauldron' or deleting raw super.img to save disk space.
+    """
+    print_section("Super Image Unpack Assistant")
+    print_info(f"Detected: {Colors.BOLD}{super_img_path.name}{Colors.RESET} ({format_size(super_img_path.stat().st_size)})")
+
+    if not ask_confirm("Unpack super.img into its logical partitions (system, vendor, product, etc.)?", default=True):
+        return
+
+    unpacked_logical = unpack_super_image(super_img_path, output_dir=output_dir)
+    if not unpacked_logical:
+        print_warning("No logical partitions could be extracted from super.img.")
+        return
+
+    # Display extracted logical partitions
+    headers = ["#", "Logical Partition", "Image File", "Size"]
+    rows = []
+    for idx, lp in enumerate(unpacked_logical):
+        rows.append([str(idx + 1), lp.stem, lp.name, format_size(lp.stat().st_size)])
+    print_table(headers, rows)
+
+    # Option to unpack to cauldron/
+    if ask_confirm(f"Unpack these {len(unpacked_logical)} logical partition(s) into 'cauldron/' now for editing?", default=True):
+        print_info(f"Unpacking logical partitions to {CAULDRON_DIR}...")
+        for lp in unpacked_logical:
+            unpack_filesystem_image(lp, cauldron_dir=CAULDRON_DIR)
+        print_success(f"All logical partitions are ready for modification in {CAULDRON_DIR}")
+
+    # Option to delete raw super.img to save space
+    if ask_confirm(f"Delete the large {super_img_path.name} to save disk space? ({format_size(super_img_path.stat().st_size)})", default=False):
+        super_img_path.unlink(missing_ok=True)
+        print_info(f"Removed {super_img_path.name} to conserve disk space.")
 
 
 def run_ota_dumper_menu():
-    """Interactive CLI menu for Unpacking OTA ROM / Payload."""
-    print_section("Unpack OTA ROM / Payload Dumper")
+    """Interactive CLI menu for Unpacking OTA ROM / Payload / ROM.zip."""
+    print_section("Unpack OTA ROM / Payload / ROM.zip")
 
     archives = find_rom_archives()
     if not archives:
@@ -200,6 +272,7 @@ def run_ota_dumper_menu():
     info = inspect_archive(target_path)
     print_info(f"File Type Detected: {Colors.BRIGHT_CYAN}{info['type']}{Colors.RESET}")
 
+    # Case 1: Payload / OTA ZIP with payload.bin
     if info["type"] in ["ota_zip_payload", "payload"]:
         partitions = info["partitions"]
         if partitions:
@@ -227,14 +300,99 @@ def run_ota_dumper_menu():
             else:
                 return
         else:
-            # list failed or couldn't parse, do full dump
             extract_payload(target_path, None, IMAGES_DIR)
 
+    # Case 2: ROM.zip with images/ (Fastboot ROM / Image ZIP)
     elif info["type"] == "zip_images":
-        print_info(f"Zip contains {len(info['img_files'])} .img file(s).")
-        if ask_confirm("Extract all .img files to images/ directory?"):
-            extract_zip_raw_images(target_path, IMAGES_DIR)
+        entries = info["image_entries"]
+        has_super = info["has_super"]
+        print_info(f"Found {len(entries)} partition image(s) inside {target_path.name}")
 
+        # Show partitions table
+        headers = ["#", "Partition", "Internal Path", "Uncompressed Size", "Compressed Size"]
+        rows = []
+        for i, entry in enumerate(entries):
+            p_color = Colors.BRIGHT_GREEN if "super" in entry["partition_name"].lower() else (
+                Colors.CYAN if any(b in entry["partition_name"].lower() for b in ["boot", "kernel"]) else ""
+            )
+            rows.append([
+                str(i + 1),
+                f"{p_color}{entry['partition_name']}{Colors.RESET}",
+                entry["internal_path"],
+                format_size(entry["file_size"]),
+                format_size(entry["compress_size"]),
+            ])
+        print_table(headers, rows)
+
+        # Menu options
+        menu_opts = [f"Extract ALL ({len(entries)} partitions)"]
+        if has_super:
+            menu_opts.append("Extract super.img AND automatically unpack its logical partitions (system, vendor...)")
+        menu_opts.extend([
+            "Extract core partitions (boot, vendor_boot, init_boot, super, vbmeta, dtbo)",
+            "Select custom partitions to extract (by number or name)",
+            "Cancel",
+        ])
+
+        choice = ask_choice("Choose extraction mode:", menu_opts, default_idx=0)
+        selected_to_extract = []
+        auto_unpack_super = False
+
+        if choice == 0:
+            selected_to_extract = entries
+        elif has_super and choice == 1:
+            # Extract super.img + boot images
+            selected_to_extract = [e for e in entries if "super" in e["partition_name"].lower()]
+            auto_unpack_super = True
+        elif (has_super and choice == 2) or (not has_super and choice == 1):
+            core_keywords = ["boot", "vendor_boot", "init_boot", "super", "vbmeta", "dtbo", "recovery"]
+            selected_to_extract = [e for e in entries if any(k in e["partition_name"].lower() for k in core_keywords)]
+        elif (has_super and choice == 3) or (not has_super and choice == 2):
+            selection_input = ask_text(f"Enter partition numbers (e.g. 1, 3, 5) or names (e.g. boot, super) [1-{len(entries)}]")
+            if not selection_input:
+                return
+            chosen_items = [x.strip().lower() for x in selection_input.split(",") if x.strip()]
+            for item in chosen_items:
+                if item.isdigit():
+                    idx = int(item) - 1
+                    if 0 <= idx < len(entries) and entries[idx] not in selected_to_extract:
+                        selected_to_extract.append(entries[idx])
+                else:
+                    clean_name = item.replace(".img", "")
+                    for e in entries:
+                        if e["partition_name"].lower() == clean_name and e not in selected_to_extract:
+                            selected_to_extract.append(e)
+        else:
+            return
+
+        if not selected_to_extract:
+            print_warning("No partitions selected for extraction.")
+            return
+
+        # Perform extraction
+        extracted_paths = extract_zip_selected_images(target_path, selected_to_extract, IMAGES_DIR)
+
+        # Check for super.img in extracted images
+        super_path = IMAGES_DIR / "super.img"
+        if not super_path.exists():
+            # Check if any extracted path has 'super' in stem
+            for p in extracted_paths:
+                if "super" in p.stem.lower():
+                    super_path = p
+                    break
+
+        if super_path.exists():
+            if auto_unpack_super:
+                handle_super_unpack_workflow(super_path, IMAGES_DIR)
+            else:
+                handle_super_unpack_workflow(super_path, IMAGES_DIR)
+        else:
+            # Prompt to unpack other extracted images to cauldron
+            if ask_confirm(f"Unpack {len(extracted_paths)} extracted image(s) to 'cauldron/' now?", default=False):
+                for p in extracted_paths:
+                    unpack_image(p)
+
+    # Case 3: Raw image file
     elif info["type"] == "raw_image":
         dest = IMAGES_DIR / target_path.name
         if target_path.resolve() != dest.resolve():
@@ -243,6 +401,9 @@ def run_ota_dumper_menu():
             print_success(f"Copied {target_path.name} to {IMAGES_DIR}")
         else:
             print_info(f"Image {target_path.name} is already in {IMAGES_DIR}")
+
+        if "super" in target_path.stem.lower():
+            handle_super_unpack_workflow(dest, IMAGES_DIR)
 
     else:
         print_warning(f"Unrecognized archive type for {target_path.name}")

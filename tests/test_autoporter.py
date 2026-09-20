@@ -218,6 +218,70 @@ class TestAutoporter(unittest.TestCase):
         self.assertIsNotNone(payload_zip)
         self.assertTrue(payload_zip.exists())
 
+    def test_rom_zip_partition_selection_and_super_unpack(self):
+        """Test ROM.zip containing images/ with selective extraction and automated super.img unpacking."""
+        import zipfile
+        from core.ota_dumper import inspect_archive, extract_zip_selected_images
+        from core.partition_unpacker import unpack_super_image
+
+        # 1. Create a minimal valid super.img
+        super_parts_dir = self.test_dir / "super_parts"
+        super_parts_dir.mkdir(parents=True, exist_ok=True)
+        sys_img = super_parts_dir / "system.img"
+        ven_img = super_parts_dir / "vendor.img"
+        with open(sys_img, "wb") as f:
+            f.write(b"\x00" * (5 * 1024 * 1024))
+        with open(ven_img, "wb") as f:
+            f.write(b"\x00" * (5 * 1024 * 1024))
+
+        super_file = self.test_dir / "super.img"
+        build_super_image(
+            partitions=[{"path": sys_img, "size": sys_img.stat().st_size}, {"path": ven_img, "size": ven_img.stat().st_size}],
+            device_size=33554432,  # 32MB
+            group_name="qti_dynamic_partitions",
+            is_sparse=False,
+            is_vab=False,
+            output_path=super_file,
+        )
+        self.assertTrue(super_file.exists())
+
+        # 2. Package into a fastboot ROM.zip with images/ structure
+        rom_zip = self.test_dir / "fastboot_rom.zip"
+        with zipfile.ZipFile(rom_zip, "w") as zf:
+            zf.writestr("images/boot.img", b"BOOT_DUMMY_DATA")
+            zf.writestr("images/vbmeta.img", b"VBMETA_DUMMY_DATA")
+            zf.write(super_file, "images/super.img")
+
+        # 3. Inspect archive
+        info = inspect_archive(rom_zip)
+        self.assertEqual(info["type"], "zip_images")
+        self.assertTrue(info["has_super"])
+        self.assertIn("boot", info["partitions"])
+        self.assertIn("super", info["partitions"])
+        self.assertIn("vbmeta", info["partitions"])
+
+        # 4. Selective extraction (extract only super and boot)
+        entries_to_extract = [e for e in info["image_entries"] if e["partition_name"] in ["super", "boot"]]
+        self.assertEqual(len(entries_to_extract), 2)
+
+        out_img_dir = self.test_dir / "extracted_images"
+        out_img_dir.mkdir(parents=True, exist_ok=True)
+        extracted = extract_zip_selected_images(rom_zip, entries_to_extract, output_dir=out_img_dir)
+        self.assertEqual(len(extracted), 2)
+        self.assertTrue((out_img_dir / "super.img").exists())
+        self.assertTrue((out_img_dir / "boot.img").exists())
+        self.assertFalse((out_img_dir / "vbmeta.img").exists())  # was not selected
+
+        # 5. Unpack extracted super.img
+        unpacked_logical = unpack_super_image(out_img_dir / "super.img", output_dir=out_img_dir)
+        self.assertGreater(len(unpacked_logical), 0)
+        logical_names = [p.stem for p in unpacked_logical]
+        self.assertIn("system", logical_names)
+        self.assertIn("vendor", logical_names)
+        self.assertTrue((out_img_dir / "system.img").exists())
+        self.assertTrue((out_img_dir / "vendor.img").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
+

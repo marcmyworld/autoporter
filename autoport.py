@@ -111,9 +111,11 @@ def parse_args():
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # unpack-ota
-    p_ota = subparsers.add_parser("unpack-ota", help="Unpack an OTA zip or payload.bin")
-    p_ota.add_argument("archive", type=str, help="Path to OTA ZIP or payload.bin")
-    p_ota.add_argument("-p", "--partitions", type=str, default="", help="Comma-separated partition names")
+    p_ota = subparsers.add_parser("unpack-ota", help="Unpack an OTA zip, payload.bin, or ROM.zip with images/")
+    p_ota.add_argument("archive", type=str, help="Path to OTA ZIP, payload.bin, or ROM.zip")
+    p_ota.add_argument("-p", "--partitions", type=str, default="", help="Comma-separated partition names (e.g. boot,super)")
+    p_ota.add_argument("--unpack-super", action="store_true", help="Automatically unpack super.img into logical partitions")
+    p_ota.add_argument("--to-cauldron", action="store_true", help="Unpack extracted partitions directly into cauldron/")
 
     # unpack-image
     p_img = subparsers.add_parser("unpack-image", help="Unpack partition image into cauldron")
@@ -138,9 +140,33 @@ if __name__ == "__main__":
                 banner()
                 display_workspace_status()
             elif args.command == "unpack-ota":
-                from core.ota_dumper import extract_payload
-                parts = [x.strip() for x in args.partitions.split(",") if x.strip()] if args.partitions else None
-                extract_payload(Path(args.archive).resolve(), selected_partitions=parts)
+                from core.ota_dumper import inspect_archive, extract_payload, extract_zip_selected_images, handle_super_unpack_workflow
+                from core.partition_unpacker import unpack_image
+                archive_path = Path(args.archive).resolve()
+                info = inspect_archive(archive_path)
+                selected_parts = [x.strip() for x in args.partitions.split(",") if x.strip()] if args.partitions else None
+
+                if info["type"] in ["ota_zip_payload", "payload"]:
+                    extract_payload(archive_path, selected_partitions=selected_parts)
+                elif info["type"] == "zip_images":
+                    entries = info["image_entries"]
+                    if selected_parts:
+                        clean_reqs = [p.lower().replace(".img", "") for p in selected_parts]
+                        chosen_entries = [e for e in entries if e["partition_name"].lower() in clean_reqs]
+                    else:
+                        chosen_entries = entries
+                    extracted = extract_zip_selected_images(archive_path, chosen_entries, IMAGES_DIR)
+
+                    super_path = IMAGES_DIR / "super.img"
+                    if (args.unpack_super or (selected_parts and "super" in [p.lower() for p in selected_parts])) and super_path.exists():
+                        handle_super_unpack_workflow(super_path, IMAGES_DIR)
+
+                    if args.to_cauldron:
+                        for p in extracted:
+                            if p.exists() and p.stem != "super":
+                                unpack_image(p)
+                else:
+                    print_warning(f"Unrecognized archive type: {info['type']}")
             elif args.command == "unpack-image":
                 from core.partition_unpacker import unpack_image
                 unpack_image(Path(args.image).resolve())

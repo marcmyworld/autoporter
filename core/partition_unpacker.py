@@ -78,13 +78,15 @@ def unsparse_image_if_needed(img_path: Path) -> Path:
         return img_path
 
 
-def unpack_super_image(super_path: Path, output_dir: Path = IMAGES_DIR) -> bool:
+def unpack_super_image(super_path: Path, output_dir: Path = IMAGES_DIR) -> List[Path]:
     """Unpacks a super.img into individual partition images using lpunpack."""
     print_info(f"Unpacking Super Image: {super_path.name} ({format_size(super_path.stat().st_size)})")
     unsparse_image_if_needed(super_path)
 
-    lpunpack_tool = get_binary("lpunpack")
     output_dir.mkdir(parents=True, exist_ok=True)
+    before_imgs = {p.resolve() for p in output_dir.glob("*.img")}
+
+    lpunpack_tool = get_binary("lpunpack")
 
     with Spinner(f"Extracting logical partitions from {super_path.name}..."):
         res = subprocess.run([lpunpack_tool, str(super_path), str(output_dir)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -96,9 +98,11 @@ def unpack_super_image(super_path: Path, output_dir: Path = IMAGES_DIR) -> bool:
         with Spinner("Extracting super with imgkit..."):
             res = subprocess.run([imgkit_tool, "unpack", "-i", str(super_path), "-o", str(output_dir)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    extracted_imgs = list(output_dir.glob("*.img"))
-    print_success(f"Super image unpacked. Available partition images in {output_dir}: {len(extracted_imgs)}")
-    return True
+    after_imgs = {p.resolve() for p in output_dir.glob("*.img")}
+    new_imgs = [p for p in sorted(list(after_imgs - before_imgs), key=lambda x: x.name) if p.name != super_path.name]
+    print_success(f"Super image unpacked. Extracted {len(new_imgs)} logical partition image(s) to {output_dir}")
+    return new_imgs
+
 
 
 def unpack_boot_image(boot_path: Path, cauldron_dir: Path = CAULDRON_DIR) -> bool:

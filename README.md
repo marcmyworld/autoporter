@@ -6,10 +6,11 @@ Autoporter is a complete, scriptable, and interactive terminal environment desig
 
 ## ⚡ Key Capabilities
 
-1. **OTA ROM & Payload Unpacking**
+1. **OTA ROM, Payload & ROM.zip Unpacking**
    - Direct extraction of `payload.bin` from OTA ZIPs or standalone payload files using high-performance `payload-dumper-go`.
    - Selective partition dumping (e.g. `system`, `vendor`, `product`, `boot`) or full multi-threaded extraction.
-   - Automatic extraction of raw `.img` files from fastboot / factory firmware ZIPs.
+   - **Fastboot ROM.zip with `images/` support**: Scans images embedded inside ROM archives (`images/super.img`, `images/boot.img`, etc.) with full partition selection menus.
+   - **Automated `super.img` Unpacking**: When `super.img` is present or extracted, Autoporter detects it and offers 1-click unpacking into its logical partitions (`system`, `vendor`, `product`, etc.), with optional direct extraction into `cauldron/` and disk-saving cleanup.
 
 2. **Image Unpacking to `cauldron/`**
    - **Filesystems**: EROFS, EXT4, and F2FS images automatically unsparsed and unpacked.
