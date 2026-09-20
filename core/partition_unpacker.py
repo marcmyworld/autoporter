@@ -7,11 +7,12 @@ Preserves file_contexts, fs_config, permissions, and image metadata.
 
 import os
 import sys
+import re
 import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 from core.config import (
     get_binary,
@@ -94,11 +95,143 @@ def normalize_partition_slots(output_dir: Path, candidate_images: Optional[List[
     return sorted(normalized, key=lambda p: p.name)
 
 
+PARTED_PATTERNS = [
+    # super.img.0, super.img.00, super.img.1
+    re.compile(r"^(?P<base>.+?)\.img\.(?P<chunk>\d+)$", re.IGNORECASE),
+    # super.img.sparsechunk.0, super.img_sparsechunk.0
+    re.compile(r"^(?P<base>.+?)\.img[_\.]sparsechunk[_\.]?(?P<chunk>\d+)$", re.IGNORECASE),
+    # super_sparsechunk.0, super_sparsechunk0
+    re.compile(r"^(?P<base>.+?)[_\.]sparsechunk[_\.]?(?P<chunk>\d+)$", re.IGNORECASE),
+    # super_0.img, super-0.img, super.0.img
+    re.compile(r"^(?P<base>.+?)[_\-\.](?P<chunk>\d+)\.img$", re.IGNORECASE),
+    # super.0, super.1 (base alphanumeric)
+    re.compile(r"^(?P<base>[a-zA-Z0-9_\-]+)\.(?P<chunk>\d+)$", re.IGNORECASE),
+]
+
+
+def match_parted_image(filename: str) -> Optional[Tuple[str, int]]:
+    """
+    Checks if a filename matches parted/split image patterns
+    (e.g., super.img.0, super.img.sparsechunk.0, super_sparsechunk.1, super_0.img, super.0).
+    Returns (base_name, chunk_index) or None.
+    """
+    name = Path(filename).name
+    for pat in PARTED_PATTERNS:
+        m = pat.match(name)
+        if m:
+            base = m.group("base")
+            chunk = int(m.group("chunk"))
+            if base.lower().endswith(".img"):
+                base = base[:-4]
+            if base.lower().endswith(".sparsechunk") or base.lower().endswith("_sparsechunk"):
+                base = re.sub(r"[_\.]sparsechunk$", "", base, flags=re.IGNORECASE)
+            return base, chunk
+    return None
+
+
+def merge_parted_chunks(chunk_paths: List[Path], output_path: Path) -> Optional[Path]:
+    """
+    Merges ordered parted chunks (sorted by chunk index) into a single image file.
+    If chunks are Android sparse files (0xED26FF3A), simg2img is used directly
+    to combine and unsparse them.
+    Otherwise, binary concatenation is performed, followed by unsparsing if needed.
+    """
+    if not chunk_paths:
+        return None
+
+    def get_chunk_idx(p: Path) -> int:
+        match = match_parted_image(p.name)
+        return match[1] if match else 0
+
+    sorted_chunks = sorted(chunk_paths, key=get_chunk_idx)
+
+    # Check if first chunk is sparse
+    is_sparse = False
+    try:
+        with open(sorted_chunks[0], "rb") as f:
+            magic = f.read(4)
+            if magic == b"\x3a\xff\x26\xed":
+                is_sparse = True
+    except Exception:
+        pass
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        output_path.unlink()
+
+    if is_sparse:
+        try:
+            simg2img_tool = get_binary("simg2img")
+            cmd = [simg2img_tool] + [str(cp) for cp in sorted_chunks] + [str(output_path)]
+            with Spinner(f"Merging and unsparsing {len(sorted_chunks)} sparse chunks -> {output_path.name}..."):
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if res.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
+                print_success(f"Merged and unsparsed {len(sorted_chunks)} chunks -> {output_path.name} ({format_size(output_path.stat().st_size)})")
+                return output_path
+            else:
+                print_warning(f"simg2img failed ({res.stderr.strip() if res.stderr else 'unknown error'}). Falling back to binary concatenation...")
+        except Exception as e:
+            print_warning(f"simg2img invocation error: {e}. Falling back to binary concatenation...")
+
+    # Fallback / Raw binary concatenation
+    with Spinner(f"Concatenating {len(sorted_chunks)} chunks -> {output_path.name}..."):
+        with open(output_path, "wb") as out_f:
+            for cp in sorted_chunks:
+                with open(cp, "rb") as in_f:
+                    shutil.copyfileobj(in_f, out_f, length=8 * 1024 * 1024)
+
+    if output_path.exists() and output_path.stat().st_size > 0:
+        unsparse_image_if_needed(output_path)
+        print_success(f"Merged {len(sorted_chunks)} chunks -> {output_path.name} ({format_size(output_path.stat().st_size)})")
+        return output_path
+
+    print_error(f"Failed to merge chunks into {output_path.name}")
+    return None
+
+
+def check_and_merge_loose_parted_images(images_dir: Path) -> List[Path]:
+    """
+    Checks images_dir for loose parted chunks (e.g. super.img.0, super.img.1)
+    and offers to merge them into a single image.
+    """
+    if not images_dir.exists():
+        return []
+
+    parted_groups: Dict[str, List[Path]] = {}
+    for f in images_dir.iterdir():
+        if not f.is_file():
+            continue
+        match = match_parted_image(f.name)
+        if match:
+            base_name, _ = match
+            parted_groups.setdefault(base_name, []).append(f)
+
+    merged_paths = []
+    for base_name, chunk_files in parted_groups.items():
+        if len(chunk_files) < 2 and base_name.lower() != "super":
+            continue
+        target_img = images_dir / f"{base_name}.img"
+        if not target_img.exists() or target_img.stat().st_size == 0:
+            total_sz = sum(cf.stat().st_size for cf in chunk_files)
+            if ask_confirm(f"Found {len(chunk_files)} parted chunks for '{base_name}' ({format_size(total_sz)}). Merge into {target_img.name}?", default=True):
+                merged = merge_parted_chunks(chunk_files, target_img)
+                if merged:
+                    merged_paths.append(merged)
+                    if ask_confirm(f"Delete the {len(chunk_files)} temporary parted chunk files to save space?", default=True):
+                        for cf in chunk_files:
+                            cf.unlink(missing_ok=True)
+                        print_info(f"Removed temporary parted chunk files for {base_name}.")
+    return merged_paths
+
+
 def list_available_images() -> List[Dict[str, any]]:
     """Lists all available images in the images/ directory."""
     images = []
     if not IMAGES_DIR.exists():
         return images
+
+    # Check for any loose parted chunks and merge if needed
+    check_and_merge_loose_parted_images(IMAGES_DIR)
 
     # Normalize any slot suffixes and remove 0-byte stub files
     normalize_partition_slots(IMAGES_DIR)

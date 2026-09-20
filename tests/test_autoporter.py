@@ -364,6 +364,94 @@ class TestAutoporter(unittest.TestCase):
             if orig_active:
                 ProjectManager.set_active_project(orig_active)
 
+    def test_parted_image_matching_and_recombination(self):
+        """Test detection, numerical sorting, and recombination of parted image chunks."""
+        from core.partition_unpacker import match_parted_image, merge_parted_chunks
+
+        # 1. Test pattern matching
+        self.assertEqual(match_parted_image("super.img.0"), ("super", 0))
+        self.assertEqual(match_parted_image("super.img.13"), ("super", 13))
+        self.assertEqual(match_parted_image("images/super.img.9"), ("super", 9))
+        self.assertEqual(match_parted_image("super.img.sparsechunk.1"), ("super", 1))
+        self.assertEqual(match_parted_image("system.img_sparsechunk.0"), ("system", 0))
+        self.assertEqual(match_parted_image("super_sparsechunk.2"), ("super", 2))
+        self.assertEqual(match_parted_image("super_sparsechunk3"), ("super", 3))
+        self.assertEqual(match_parted_image("super_0.img"), ("super", 0))
+        self.assertEqual(match_parted_image("super-1.img"), ("super", 1))
+        self.assertEqual(match_parted_image("super.0"), ("super", 0))
+
+        # Test non-parted images rejection
+        self.assertIsNone(match_parted_image("boot.img"))
+        self.assertIsNone(match_parted_image("vendor_boot.img"))
+        self.assertIsNone(match_parted_image("system.img"))
+        self.assertIsNone(match_parted_image("payload.bin"))
+        self.assertIsNone(match_parted_image("firmware.txt"))
+
+        # 2. Test multi-chunk numerical sorting and binary recombination
+        chunk_dir = self.test_dir / "test_chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        chunk_files = []
+        expected_content = b""
+
+        # Create chunks 0 to 12
+        for idx in range(13):
+            cf = chunk_dir / f"super.img.{idx}"
+            chunk_data = f"CHUNK_{idx:02d}_DATA_".encode("ascii") * 100
+            cf.write_bytes(chunk_data)
+            chunk_files.append(cf)
+            expected_content += chunk_data
+
+        # Pass chunks in reverse order to ensure numeric sorting takes precedence
+        reversed_chunks = list(reversed(chunk_files))
+        merged_output = self.test_dir / "merged_super.img"
+        res = merge_parted_chunks(reversed_chunks, merged_output)
+
+        self.assertIsNotNone(res)
+        self.assertTrue(merged_output.exists())
+        self.assertEqual(merged_output.read_bytes(), expected_content)
+        self.assertEqual(merged_output.stat().st_size, len(expected_content))
+
+    def test_parted_super_rom_zip_inspection_and_extraction(self):
+        """Test inspect_archive and extract_zip_selected_images with parted super ROM zip."""
+        import zipfile
+        from core.ota_dumper import inspect_archive, extract_zip_selected_images
+
+        # Create mock ROM.zip with parted super chunks: super.img.0 ... super.img.4 and boot.img
+        zip_path = self.test_dir / "parted_rom.zip"
+        expected_super_data = b""
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("images/boot.img", b"BOOT_PARTITION_DATA" * 50)
+            zf.writestr("images/vendor_boot.img", b"VENDOR_BOOT_DATA" * 50)
+            for i in range(5):
+                c_data = f"PARTED_SUPER_CHUNK_{i}_".encode("ascii") * 100
+                expected_super_data += c_data
+                zf.writestr(f"images/super.img.{i}", c_data)
+
+        # 1. Test inspect_archive
+        info = inspect_archive(zip_path)
+        self.assertEqual(info["type"], "zip_images")
+        self.assertTrue(info["has_super"])
+        self.assertIn("super", info["partitions"])
+        self.assertIn("boot", info["partitions"])
+        self.assertIn("vendor_boot", info["partitions"])
+
+        # Super should be unified into a single entry with is_parted=True
+        super_entry = next((e for e in info["image_entries"] if e["partition_name"] == "super"), None)
+        self.assertIsNotNone(super_entry)
+        self.assertTrue(super_entry["is_parted"])
+        self.assertEqual(len(super_entry["chunks"]), 5)
+        self.assertEqual(super_entry["file_size"], len(expected_super_data))
+
+        # 2. Test extraction of parted super + boot
+        out_images = self.test_dir / "extracted_parted"
+        extracted = extract_zip_selected_images(zip_path, [super_entry], output_dir=out_images)
+
+        self.assertEqual(len(extracted), 1)
+        merged_super = out_images / "super.img"
+        self.assertTrue(merged_super.exists())
+        self.assertEqual(merged_super.read_bytes(), expected_super_data)
+
 
 if __name__ == "__main__":
     unittest.main()

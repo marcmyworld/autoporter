@@ -75,9 +75,6 @@ class Project:
         """Initializes all project directories and creates project.json."""
         for d in [self.input_dir, self.images_dir, self.cauldron_dir, self.config_dir, self.finalized_dir, self.output_dir]:
             d.mkdir(parents=True, exist_ok=True)
-            keep_file = d / ".gitkeep"
-            if not keep_file.exists():
-                keep_file.touch()
 
         meta = {
             "name": self.name,

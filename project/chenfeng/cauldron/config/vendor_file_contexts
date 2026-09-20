@@ -1,2 +1,0 @@
-/vendor/etc u:object_r:system_file:s0
-/vendor/etc/vendor.conf u:object_r:system_file:s0

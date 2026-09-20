@@ -8,11 +8,12 @@ with granular partition selection and automated super.img unpacking.
 import os
 import sys
 import re
+import time
 import zipfile
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 from core.config import get_binary, IMAGES_DIR, INPUT_DIR, CAULDRON_DIR, format_size
 from core.ui import (
@@ -30,7 +31,14 @@ from core.ui import (
     ask_confirm,
     parse_range_selection,
 )
-from core.partition_unpacker import unpack_super_image, unpack_filesystem_image, unpack_boot_image, unpack_image
+from core.partition_unpacker import (
+    unpack_super_image,
+    unpack_filesystem_image,
+    unpack_boot_image,
+    unpack_image,
+    match_parted_image,
+    merge_parted_chunks,
+)
 
 
 def find_rom_archives() -> List[Path]:
@@ -78,22 +86,33 @@ def inspect_archive(archive_path: Path) -> Dict[str, any]:
                     info["partition_details"] = details
                     info["partitions"] = [d["name"] for d in details]
                 else:
-                    # Scan for .img files anywhere inside the zip (e.g. images/*.img or root)
-                    img_members = [
-                        m for m in zf.infolist()
-                        if not m.is_dir() and m.filename.lower().endswith(".img")
-                    ]
-                    if img_members:
+                    # Scan for .img files or parted image chunks anywhere inside the zip
+                    img_members = []
+                    parted_map: Dict[str, List[Tuple[int, any]]] = {}
+                    for m in zf.infolist():
+                        if m.is_dir():
+                            continue
+                        name = Path(m.filename).name
+                        parted_match = match_parted_image(name)
+                        if parted_match:
+                            base_name, chunk_idx = parted_match
+                            parted_map.setdefault(base_name, []).append((chunk_idx, m))
+                        elif name.lower().endswith(".img"):
+                            img_members.append(m)
+
+                    if img_members or parted_map:
                         info["type"] = "zip_images"
                         entries = []
                         partitions = []
                         has_super = False
+
                         for m in img_members:
                             p_stem = Path(m.filename).stem
                             partitions.append(p_stem)
                             if "super" in p_stem.lower():
                                 has_super = True
                             entries.append({
+                                "is_parted": False,
                                 "member": m,
                                 "internal_path": m.filename,
                                 "partition_name": p_stem,
@@ -101,6 +120,28 @@ def inspect_archive(archive_path: Path) -> Dict[str, any]:
                                 "file_size": m.file_size,
                                 "compress_size": m.compress_size,
                             })
+
+                        for base_name, chunks in parted_map.items():
+                            if len(chunks) < 2 and base_name.lower() not in ("super", "system", "vendor", "product", "odm", "system_ext", "cust", "userdata"):
+                                continue
+                            sorted_chunks = sorted(chunks, key=lambda x: x[0])
+                            total_size = sum(m.file_size for _, m in sorted_chunks)
+                            total_compress = sum(m.compress_size for _, m in sorted_chunks)
+                            partitions.append(base_name)
+                            if "super" in base_name.lower():
+                                has_super = True
+                            parent_dir = str(Path(sorted_chunks[0][1].filename).parent)
+                            internal_display = f"{parent_dir}/{base_name}.img.* ({len(sorted_chunks)} chunks)" if parent_dir != "." else f"{base_name}.img.* ({len(sorted_chunks)} chunks)"
+                            entries.append({
+                                "is_parted": True,
+                                "chunks": sorted_chunks,
+                                "partition_name": base_name,
+                                "filename": f"{base_name}.img",
+                                "internal_path": internal_display,
+                                "file_size": total_size,
+                                "compress_size": total_compress,
+                            })
+
                         info["image_entries"] = sorted(entries, key=lambda x: x["partition_name"])
                         info["partitions"] = sorted(list(set(partitions)))
                         info["has_super"] = has_super
@@ -200,7 +241,7 @@ def extract_zip_selected_images(
     output_dir: Path = IMAGES_DIR,
 ) -> List[Path]:
     """
-    Extracts selected .img entries from a ROM zip archive into output_dir.
+    Extracts selected .img entries (and recombines parted chunks) from a ROM zip archive into output_dir.
     Flattens any nested directory structure (e.g. images/super.img -> images/super.img).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -211,20 +252,56 @@ def extract_zip_selected_images(
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         for i, entry in enumerate(selected_entries):
-            member = entry["member"]
             dest_filename = entry["filename"]
             target_file = output_dir / dest_filename
             p_name = entry["partition_name"]
             sz_str = format_size(entry["file_size"])
+            is_parted = entry.get("is_parted", False)
 
-            progress_bar(i, total, prefix="Extracting", suffix=f"{p_name} ({sz_str})")
+            if is_parted:
+                chunks = entry["chunks"]
+                chunk_count = len(chunks)
+                print_info(f"\nProcessing parted partition {Colors.BOLD}{p_name}{Colors.RESET} ({chunk_count} chunks, {sz_str})...")
 
-            with zf.open(member) as source, open(target_file, "wb") as target:
-                shutil.copyfileobj(source, target, length=1024 * 1024)
+                temp_chunk_dir = output_dir / f".tmp_{p_name}_{int(time.time())}"
+                temp_chunk_dir.mkdir(parents=True, exist_ok=True)
+                extracted_chunk_paths = []
 
-            extracted_paths.append(target_file)
+                try:
+                    for c_idx, (chunk_num, member) in enumerate(chunks):
+                        progress_bar(
+                            c_idx,
+                            chunk_count,
+                            prefix=f"Extracting {p_name}",
+                            suffix=f"Chunk {c_idx + 1}/{chunk_count} ({format_size(member.file_size)})",
+                        )
+                        chunk_dest = temp_chunk_dir / f"chunk_{chunk_num:03d}_{Path(member.filename).name}"
+                        with zf.open(member) as source, open(chunk_dest, "wb") as target:
+                            shutil.copyfileobj(source, target, length=2 * 1024 * 1024)
+                        extracted_chunk_paths.append(chunk_dest)
 
-        progress_bar(total, total, prefix="Extracting", suffix="Completed!")
+                    progress_bar(chunk_count, chunk_count, prefix=f"Extracting {p_name}", suffix="Chunks extracted!")
+                    print()
+
+                    merged = merge_parted_chunks(extracted_chunk_paths, target_file)
+                    if merged and merged.exists():
+                        extracted_paths.append(merged)
+                    else:
+                        print_error(f"Failed to merge parted chunks for {p_name}")
+                finally:
+                    shutil.rmtree(temp_chunk_dir, ignore_errors=True)
+
+            else:
+                member = entry["member"]
+                progress_bar(i, total, prefix="Extracting", suffix=f"{p_name} ({sz_str})")
+
+                with zf.open(member) as source, open(target_file, "wb") as target:
+                    shutil.copyfileobj(source, target, length=1024 * 1024)
+
+                extracted_paths.append(target_file)
+
+        if not any(e.get("is_parted") for e in selected_entries):
+            progress_bar(total, total, prefix="Extracting", suffix="Completed!")
 
     print_success(f"Extracted {len(extracted_paths)} partition image(s) to {output_dir}")
     return extracted_paths
@@ -348,12 +425,20 @@ def run_ota_dumper_menu():
         headers = ["#", "Partition", "Internal Path", "Uncompressed Size", "Compressed Size"]
         rows = []
         for i, entry in enumerate(entries):
-            p_color = Colors.BRIGHT_GREEN if "super" in entry["partition_name"].lower() else (
-                Colors.CYAN if any(b in entry["partition_name"].lower() for b in ["boot", "kernel"]) else ""
-            )
+            p_name = entry["partition_name"]
+            is_parted = entry.get("is_parted", False)
+            if is_parted:
+                p_display = f"{Colors.BRIGHT_GREEN}{p_name} (parted: {len(entry['chunks'])} chunks){Colors.RESET}"
+            elif "super" in p_name.lower():
+                p_display = f"{Colors.BRIGHT_GREEN}{p_name}{Colors.RESET}"
+            elif any(b in p_name.lower() for b in ["boot", "kernel"]):
+                p_display = f"{Colors.CYAN}{p_name}{Colors.RESET}"
+            else:
+                p_display = p_name
+
             rows.append([
                 str(i + 1),
-                f"{p_color}{entry['partition_name']}{Colors.RESET}",
+                p_display,
                 entry["internal_path"],
                 format_size(entry["file_size"]),
                 format_size(entry["compress_size"]),
