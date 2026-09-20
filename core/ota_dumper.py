@@ -7,6 +7,7 @@ with granular partition selection and automated super.img unpacking.
 
 import os
 import sys
+import re
 import zipfile
 import shutil
 import subprocess
@@ -62,7 +63,9 @@ def inspect_archive(archive_path: Path) -> Dict[str, any]:
 
     if archive_path.name.lower().endswith(".bin") or archive_path.name == "payload.bin":
         info["type"] = "payload"
-        info["partitions"] = list_payload_partitions(archive_path)
+        details = list_payload_partition_details(archive_path)
+        info["partition_details"] = details
+        info["partitions"] = [d["name"] for d in details]
         return info
 
     if archive_path.name.lower().endswith(".zip"):
@@ -71,7 +74,9 @@ def inspect_archive(archive_path: Path) -> Dict[str, any]:
                 namelist = zf.namelist()
                 if "payload.bin" in namelist or any(n.endswith("/payload.bin") for n in namelist):
                     info["type"] = "ota_zip_payload"
-                    info["partitions"] = list_payload_partitions(archive_path)
+                    details = list_payload_partition_details(archive_path)
+                    info["partition_details"] = details
+                    info["partitions"] = [d["name"] for d in details]
                 else:
                     # Scan for .img files anywhere inside the zip (e.g. images/*.img or root)
                     img_members = [
@@ -112,23 +117,43 @@ def inspect_archive(archive_path: Path) -> Dict[str, any]:
     return info
 
 
-def list_payload_partitions(archive_or_bin: Path) -> List[str]:
-    """Uses payload-dumper-go to query partition names from payload."""
+def list_payload_partition_details(archive_or_bin: Path) -> List[Dict[str, str]]:
+    """Uses payload-dumper-go to query partition names and sizes from payload."""
     tool = get_binary("payload-dumper-go")
     cmd = [tool, "-l", str(archive_or_bin)]
-    partitions = []
+    details = []
+    seen = set()
+    ignore_tokens = {"payload.bin", "payload", "found", "partitions", "version", "manifest", "length", "signature"}
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
-        for line in res.stdout.splitlines():
-            line = line.strip()
-            # typical format: "boot (128 MB)" or "system"
-            if line and not line.startswith("Payload") and not line.startswith("Version"):
-                part_name = line.split()[0].replace(":", "")
-                if part_name and part_name not in partitions:
-                    partitions.append(part_name)
+        match = re.search(r"Found partitions:\s*(.*)", res.stdout, re.IGNORECASE | re.DOTALL)
+        if match:
+            content = match.group(1)
+            pairs = re.findall(r"([a-zA-Z0-9_\-]+)\s*(?:\(([^)]+)\))?", content)
+            for name, sz in pairs:
+                name_clean = name.strip()
+                if name_clean and name_clean.lower() not in ignore_tokens and name_clean not in seen:
+                    seen.add(name_clean)
+                    details.append({"name": name_clean, "size": sz.strip() if sz else "-"})
+        else:
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if not line or line.lower().startswith(("payload", "version", "manifest", "found")):
+                    continue
+                for token in line.split(","):
+                    p = token.split()[0].replace(":", "").strip()
+                    if p and p.lower() not in ignore_tokens and p not in seen:
+                        seen.add(p)
+                        details.append({"name": p, "size": "-"})
     except Exception:
         pass
-    return partitions
+    return details
+
+
+def list_payload_partitions(archive_or_bin: Path) -> List[str]:
+    """Uses payload-dumper-go to query partition names from payload."""
+    details = list_payload_partition_details(archive_or_bin)
+    return [d["name"] for d in details]
 
 
 def extract_payload(
@@ -276,10 +301,15 @@ def run_ota_dumper_menu():
     # Case 1: Payload / OTA ZIP with payload.bin
     if info["type"] in ["ota_zip_payload", "payload"]:
         partitions = info["partitions"]
+        details = info.get("partition_details", [])
         if partitions:
             print_info(f"Found {len(partitions)} partitions in payload.")
-            p_headers = ["#", "Partition Name"]
-            p_rows = [[str(i + 1), p] for i, p in enumerate(partitions)]
+            if details:
+                p_headers = ["#", "Partition Name", "Size"]
+                p_rows = [[str(i + 1), d["name"], d["size"]] for i, d in enumerate(details)]
+            else:
+                p_headers = ["#", "Partition Name"]
+                p_rows = [[str(i + 1), p] for i, p in enumerate(partitions)]
             print_table(p_headers, p_rows)
 
             sub_opts = [
