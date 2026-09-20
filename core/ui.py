@@ -6,6 +6,7 @@ Autoporter UI Engine: ANSI Styling, Banners, Spinners, Progress Bars & Menus
 import sys
 import time
 import shutil
+import random
 import threading
 from typing import List, Optional, Any, Callable
 
@@ -56,6 +57,25 @@ def banner():
    {Colors.DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}
 """
     print(art)
+
+
+MOTD_THOUGHTS = [
+    "Every bootloop is just an invitation to inspect logcat.",
+    "Great ROMs aren't built in a day, but clean partitions help.",
+    "SELinux in enforcing mode is your shield — respect the contexts!",
+    "Patience, precision, and good backups make the master chef.",
+    "May your dynamic partitions always fit within the super image size.",
+    "Stock is just a canvas; you're the artist.",
+    "Clean cauldron, sharp tools, and smooth boots.",
+    "Fastboot never lies; flash with care, port with flare.",
+    "Turning stock into magic, one partition at a time.",
+    "Simplicity is the soul of efficiency. Happy porting!",
+]
+
+
+def print_motd():
+    thought = random.choice(MOTD_THOUGHTS)
+    print(f"  {Colors.BRIGHT_YELLOW}💡 MOTD:{Colors.RESET} {Colors.ITALIC}\"{thought}\"{Colors.RESET}\n")
 
 
 def print_info(message: str):

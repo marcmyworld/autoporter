@@ -298,121 +298,136 @@ def require_active_project() -> Project:
     return p
 
 
-def run_project_manager_menu():
-    """Interactive CLI menu for project management."""
-    print_section("Project Manager (Multi-Project Environment)")
-
+def display_projects_table():
+    """Prints a concise summary table of all projects."""
     all_projs = ProjectManager.list_projects()
     active = ProjectManager.get_active_project()
 
-    print_info(f"Current Active Project: {Colors.BRIGHT_GREEN}{active.name if active else 'None'}{Colors.RESET}")
-    print_info(f"Projects Directory:     {PROJECTS_DIR}")
+    if not all_projs:
+        print_info("No projects found yet. Create one to get started!\n")
+        return
 
-    if all_projs:
-        headers = ["#", "Project (Kebab)", "Display Name", "Device", "Total Size", "Status"]
-        rows = []
-        for i, p in enumerate(all_projs):
-            ov = p.get_overview()
-            is_act = (active and active.name == p.name)
-            status = f"{Colors.BRIGHT_GREEN}● ACTIVE{Colors.RESET}" if is_act else f"{Colors.DIM}idle{Colors.RESET}"
-            from core.config import format_size
-            rows.append([
-                str(i + 1),
-                p.name,
-                ov["meta"].get("display_name", p.name),
-                ov["meta"].get("device", "-"),
-                format_size(ov["total_size"]),
-                status,
-            ])
-        print_table(headers, rows)
+    from core.config import format_size
+    headers = ["#", "Project", "Device", "Android", "Size", "Status"]
+    rows = []
+    for i, p in enumerate(all_projs):
+        ov = p.get_overview()
+        is_act = (active and active.name == p.name)
+        status = f"{Colors.BRIGHT_GREEN}● ACTIVE{Colors.RESET}" if is_act else f"{Colors.DIM}idle{Colors.RESET}"
+        rows.append([
+            str(i + 1),
+            p.name,
+            ov["meta"].get("device", "-"),
+            f"Android {ov['meta'].get('android_version', '?')}",
+            format_size(ov["total_size"]),
+            status,
+        ])
+    print_table(headers, rows)
+
+
+def select_project_dialog() -> Optional[Project]:
+    """Interactive dialog to select an existing project."""
+    all_projs = ProjectManager.list_projects()
+    if not all_projs:
+        print_warning("No projects exist yet. Please create one.")
+        return None
+    active = ProjectManager.get_active_project()
+    p_names = []
+    for p in all_projs:
+        disp = p.get_meta().get("display_name", "")
+        suffix = f" ({disp})" if disp and disp != p.name else ""
+        star = f" {Colors.BRIGHT_GREEN}★{Colors.RESET}" if (active and active.name == p.name) else ""
+        p_names.append(f"{p.name}{suffix}{star}")
+
+    p_idx = ask_choice("Select project:", p_names)
+    chosen = all_projs[p_idx]
+    ProjectManager.set_active_project(chosen)
+    return chosen
+
+
+def create_project_dialog() -> Optional[Project]:
+    """Interactive dialog to create a new project."""
+    raw_name = ask_text("Project name (e.g. HyperOS Chenfeng, Lineage 21)")
+    if not raw_name:
+        return None
+    kebab = to_kebab_case(raw_name)
+    if ProjectManager.get_project(kebab):
+        print_warning(f"Project '{kebab}' already exists.")
+        return ProjectManager.get_project(kebab)
+
+    device = ask_text("Device codename (e.g. chenfeng)", default="generic")
+    ver = ask_text("Android version (e.g. 15, 16)", default="16")
+    notes = ask_text("Notes (optional)", default="")
+
+    new_proj = ProjectManager.create_project(
+        name=kebab,
+        display_name=raw_name,
+        device=device,
+        android_version=ver,
+        notes=notes,
+    )
+    print_success(f"Created project/{new_proj.name}/")
+    return new_proj
+
+
+def delete_project_dialog() -> bool:
+    """Interactive dialog to delete a project."""
+    all_projs = ProjectManager.list_projects()
+    if not all_projs:
+        print_warning("No projects found.")
+        return False
+    p_names = [p.name for p in all_projs]
+    p_idx = ask_choice("Select project to delete:", p_names)
+    p = all_projs[p_idx]
+    if ask_confirm(f"{Colors.RED}DANGER: Delete project/{p.name}/ and all its files?{Colors.RESET}", default=False):
+        ProjectManager.delete_project(p.name)
+        print_success(f"Deleted project/{p.name}/")
+        return True
+    return False
+
+
+def edit_project_dialog(project: Optional[Project] = None) -> bool:
+    """Interactive dialog to edit project metadata."""
+    p = project or ProjectManager.get_active_project()
+    if not p:
+        print_warning("No project selected.")
+        return False
+    meta = p.get_meta()
+    disp = ask_text("Display Name", default=meta.get("display_name", p.name))
+    dev = ask_text("Device Codename", default=meta.get("device", "generic"))
+    ver = ask_text("Android Version", default=meta.get("android_version", "16"))
+    notes = ask_text("Notes", default=meta.get("notes", ""))
+    meta["display_name"] = disp
+    meta["device"] = dev
+    meta["android_version"] = ver
+    meta["notes"] = notes
+    p.save_meta(meta)
+    print_success(f"Updated metadata for project/{p.name}/")
+    return True
+
+
+def run_project_manager_menu():
+    """Interactive CLI menu for project management."""
+    print_section("Project Manager")
+    display_projects_table()
 
     options = [
-        "Switch Active Project",
+        "Select / Switch Project",
         "Create New Project",
-        "View Project Storage Breakdown",
-        "Edit Project Details (Name, Device, Notes)",
+        "Edit Project Info",
         "Delete a Project",
-        "Back to Main Menu",
+        "Back",
     ]
-    choice = ask_choice("Choose Project Action:", options, default_idx=0)
+    choice = ask_choice("Choose Action:", options, default_idx=0)
 
     if choice == 0:
-        if not all_projs:
-            print_warning("No projects exist. Please create one first.")
-            return
-        p_names = [f"{p.name} ({p.get_meta().get('display_name', '')})" for p in all_projs]
-        p_idx = ask_choice("Select project to activate:", p_names)
-        activated = ProjectManager.set_active_project(all_projs[p_idx])
-        print_success(f"Active project switched to: {Colors.BOLD}{activated.name}{Colors.RESET}")
-
+        select_project_dialog()
     elif choice == 1:
-        raw_name = ask_text("Enter new project name (e.g. HyperOS Chenfeng, Lineage 21)")
-        if not raw_name:
-            return
-        kebab = to_kebab_case(raw_name)
-        if ProjectManager.get_project(kebab):
-            print_warning(f"Project '{kebab}' already exists.")
-            return
-
-        device = ask_text("Enter device codename (e.g. chenfeng, peridot)", default="generic")
-        ver = ask_text("Enter Android version (e.g. 15, 16)", default="16")
-        notes = ask_text("Enter notes/description (optional)", default="")
-
-        new_proj = ProjectManager.create_project(
-            name=kebab,
-            display_name=raw_name,
-            device=device,
-            android_version=ver,
-            notes=notes,
-        )
-        print_success(f"Project created at project/{new_proj.name}/ and set to active!")
-
+        create_project_dialog()
     elif choice == 2:
-        if not all_projs:
-            print_warning("No projects found.")
-            return
-        p_names = [p.name for p in all_projs]
-        p_idx = ask_choice("Select project to inspect:", p_names)
-        p = all_projs[p_idx]
-        ov = p.get_overview()
-        from core.config import format_size
-        p_rows = [
-            ["input/", "Incoming ROM archives", str(ov["input"]["count"]), format_size(ov["input"]["size"])],
-            ["images/", "Extracted partition images (.img)", str(ov["images"]["count"]), format_size(ov["images"]["size"])],
-            ["cauldron/", "Unpacked working filesystem trees", str(ov["cauldron"]["count"]), f"{', '.join(ov['cauldron']['partitions'][:5]) or '(none)'}"],
-            ["finalized/", "Repacked partition images", str(ov["finalized"]["count"]), format_size(ov["finalized"]["size"])],
-            ["output/", "Final super.img & OTA packages", str(ov["output"]["count"]), format_size(ov["output"]["size"])],
-        ]
-        print_table(["Directory", "Role", "Item Count", "Total Size"], p_rows)
-
+        edit_project_dialog()
     elif choice == 3:
-        if not all_projs:
-            print_warning("No projects found.")
-            return
-        p_names = [p.name for p in all_projs]
-        p_idx = ask_choice("Select project to edit:", p_names)
-        p = all_projs[p_idx]
-        meta = p.get_meta()
-        disp = ask_text("Display Name", default=meta.get("display_name", p.name))
-        dev = ask_text("Device Codename", default=meta.get("device", "generic"))
-        ver = ask_text("Android Version", default=meta.get("android_version", "16"))
-        notes = ask_text("Notes", default=meta.get("notes", ""))
-        meta["display_name"] = disp
-        meta["device"] = dev
-        meta["android_version"] = ver
-        meta["notes"] = notes
-        p.save_meta(meta)
-        print_success(f"Updated metadata for project/{p.name}/")
-
-    elif choice == 4:
-        if not all_projs:
-            print_warning("No projects found.")
-            return
-        p_names = [p.name for p in all_projs]
-        p_idx = ask_choice("Select project to delete:", p_names)
-        p = all_projs[p_idx]
-        if ask_confirm(f"{Colors.RED}DANGER: Delete project/{p.name}/ and all its partitions?{Colors.RESET}", default=False):
-            ProjectManager.delete_project(p.name)
-            print_success(f"Deleted project/{p.name}/")
+        delete_project_dialog()
     else:
         return
+

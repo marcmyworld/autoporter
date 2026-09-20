@@ -8,21 +8,7 @@ __pycache__/
 *.tmp
 *.bak
 
-# Ignore large ROM archives, raw images, and unpacked trees
-input/*
-!input/.gitkeep
 
-images/*
-!images/.gitkeep
-
-cauldron/*
-!cauldron/.gitkeep
-
-finalized/*
-!finalized/.gitkeep
-
-output/*
-!output/.gitkeep
 
 # Active project state pointer
 project/.active_project

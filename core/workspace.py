@@ -60,23 +60,14 @@ def get_workspace_overview() -> Dict[str, any]:
 
 def display_workspace_status():
     """Prints a styled overview of the kitchen workspace for the active project."""
-    from core.project import get_active_project
-    active = get_active_project()
-    if active:
-        meta = active.get_meta()
-        disp_name = meta.get("display_name", active.name)
-        dev = meta.get("device", "generic")
-        ver = meta.get("android_version", "unknown")
-        print(f" {Colors.BOLD}Active Project:{Colors.RESET} {Colors.BRIGHT_GREEN}{active.name}{Colors.RESET} ({disp_name}) | Device: {Colors.CYAN}{dev}{Colors.RESET} | Android: {Colors.YELLOW}{ver}{Colors.RESET} | Path: {Colors.DIM}project/{active.name}/{Colors.RESET}\n")
-
     ov = get_workspace_overview()
-    headers = ["Directory", "Role", "Item Count", "Total Size"]
+    headers = ["Directory", "Role", "Items", "Total Size"]
     rows = [
-        ["input/", "Incoming ROM archives & payloads", str(ov["input"]["count"]), format_size(ov["input"]["size"])],
-        ["images/", "Extracted partition images (.img)", str(ov["images"]["count"]), format_size(ov["images"]["size"])],
-        ["cauldron/", "Unpacked working filesystem trees", str(ov["cauldron"]["count"]), f"{', '.join(ov['cauldron']['partitions'][:5]) or '(none)'}"],
-        ["finalized/", "Repacked partition images", str(ov["finalized"]["count"]), format_size(ov["finalized"]["size"])],
-        ["output/", "Final super.img & OTA packages", str(ov["output"]["count"]), format_size(ov["output"]["size"])],
+        ["input/", "ROM archives & payloads", str(ov["input"]["count"]), format_size(ov["input"]["size"])],
+        ["images/", "Partition images (.img)", str(ov["images"]["count"]), format_size(ov["images"]["size"])],
+        ["cauldron/", "Unpacked filesystems", str(ov["cauldron"]["count"]), f"{', '.join(ov['cauldron']['partitions'][:5]) or '(none)'}"],
+        ["finalized/", "Repacked images", str(ov["finalized"]["count"]), format_size(ov["finalized"]["size"])],
+        ["output/", "Built packages & super", str(ov["output"]["count"]), format_size(ov["output"]["size"])],
     ]
     print_table(headers, rows)
 
