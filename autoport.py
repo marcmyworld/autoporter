@@ -142,17 +142,22 @@ if __name__ == "__main__":
             elif args.command == "unpack-ota":
                 from core.ota_dumper import inspect_archive, extract_payload, extract_zip_selected_images, handle_super_unpack_workflow
                 from core.partition_unpacker import unpack_image
+                from core.ui import parse_range_selection
                 archive_path = Path(args.archive).resolve()
                 info = inspect_archive(archive_path)
-                selected_parts = [x.strip() for x in args.partitions.split(",") if x.strip()] if args.partitions else None
 
                 if info["type"] in ["ota_zip_payload", "payload"]:
+                    if args.partitions:
+                        indices = parse_range_selection(args.partitions, len(info["partitions"]), info["partitions"])
+                        selected_parts = [info["partitions"][i] for i in indices]
+                    else:
+                        selected_parts = None
                     extract_payload(archive_path, selected_partitions=selected_parts)
                 elif info["type"] == "zip_images":
                     entries = info["image_entries"]
-                    if selected_parts:
-                        clean_reqs = [p.lower().replace(".img", "") for p in selected_parts]
-                        chosen_entries = [e for e in entries if e["partition_name"].lower() in clean_reqs]
+                    if args.partitions:
+                        indices = parse_range_selection(args.partitions, len(entries), [e["partition_name"] for e in entries])
+                        chosen_entries = [entries[i] for i in indices]
                     else:
                         chosen_entries = entries
                     extracted = extract_zip_selected_images(archive_path, chosen_entries, IMAGES_DIR)

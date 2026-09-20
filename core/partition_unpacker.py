@@ -33,6 +33,7 @@ from core.ui import (
     ask_choice,
     ask_text,
     ask_confirm,
+    parse_range_selection,
 )
 
 
@@ -276,7 +277,7 @@ def run_partition_unpacker_menu():
         ])
     print_table(headers, rows)
 
-    options = [f"Unpack ALL ({len(available)} images)", "Select specific image(s) to unpack", "Cancel"]
+    options = [f"Unpack ALL ({len(available)} images)", "Select specific image(s) or ranges (e.g. 1-15, 18-20, or names)", "Cancel"]
     choice = ask_choice("Choose unpacking mode:", options, default_idx=0)
 
     if choice == 0:
@@ -287,13 +288,19 @@ def run_partition_unpacker_menu():
         progress_bar(total, total, prefix="Batch Unpacking", suffix="Completed!")
         print_success("All images unpacked into cauldron/")
     elif choice == 1:
-        indices_str = ask_text(f"Enter image numbers to unpack (e.g. 1, 3, 5) [1-{len(available)}]")
-        try:
-            chosen_indices = [int(x.strip()) - 1 for x in indices_str.split(",") if x.strip()]
-            for idx in chosen_indices:
-                if 0 <= idx < len(available):
-                    unpack_image(available[idx]["path"])
-        except ValueError:
-            print_error("Invalid selection.")
+        indices_str = ask_text(f"Enter image numbers/ranges to unpack (e.g. 1-15, 18-20, or boot, super) [1-{len(available)}]")
+        if not indices_str:
+            return
+        indices = parse_range_selection(indices_str, len(available), [img["name"] for img in available])
+        if not indices:
+            print_warning("No valid images selected.")
+            return
+        total = len(indices)
+        for i, idx in enumerate(indices):
+            img = available[idx]
+            progress_bar(i, total, prefix="Unpacking", suffix=img["name"])
+            unpack_image(img["path"])
+        progress_bar(total, total, prefix="Unpacking", suffix="Completed!")
+        print_success(f"Unpacked {total} selected partition(s) into cauldron/")
     else:
         return

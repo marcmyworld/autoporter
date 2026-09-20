@@ -37,6 +37,7 @@ from core.ui import (
     ask_choice,
     ask_text,
     ask_confirm,
+    parse_range_selection,
 )
 
 
@@ -330,6 +331,19 @@ def run_ota_builder_menu():
         ])
     print_table(headers, rows)
 
+    # Allow custom partition selection
+    if not ask_confirm(f"Include all {len(available)} available partitions in ROM package?", default=True):
+        sel_str = ask_text(f"Enter partition numbers/ranges to include (e.g. 1-15, 18-20, or names) [1-{len(available)}]")
+        if not sel_str:
+            return
+        indices = parse_range_selection(sel_str, len(available), [p["path"].stem for p in available])
+        if not indices:
+            print_warning("No valid partitions selected.")
+            return
+        target_partitions = [available[i] for i in indices]
+    else:
+        target_partitions = available
+
     options = [
         "Recovery Flashable ZIP (TWRP / OrangeFox / Sideload installer)",
         "Fastboot Flashable ROM Package (with flash_all.sh and flash_all.bat)",
@@ -340,12 +354,12 @@ def run_ota_builder_menu():
 
     if choice == 0:
         fname = ask_text("Enter ZIP filename", default="Autoporter-Recovery-ROM.zip")
-        build_recovery_flashable_zip(available, zip_name=fname)
+        build_recovery_flashable_zip(target_partitions, zip_name=fname)
     elif choice == 1:
         pname = ask_text("Enter Fastboot ROM folder name", default="Autoporter-Fastboot-ROM")
-        build_fastboot_rom_package(available, rom_name=pname)
+        build_fastboot_rom_package(target_partitions, rom_name=pname)
     elif choice == 2:
         fname = ask_text("Enter Payload OTA ZIP filename", default="Autoporter-Payload-OTA.zip")
-        build_payload_ota_zip(available, zip_name=fname)
+        build_payload_ota_zip(target_partitions, zip_name=fname)
     else:
         return

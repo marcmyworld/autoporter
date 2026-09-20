@@ -27,6 +27,7 @@ from core.ui import (
     ask_choice,
     ask_text,
     ask_confirm,
+    parse_range_selection,
 )
 from core.partition_unpacker import unpack_super_image, unpack_filesystem_image, unpack_boot_image, unpack_image
 
@@ -276,11 +277,15 @@ def run_ota_dumper_menu():
     if info["type"] in ["ota_zip_payload", "payload"]:
         partitions = info["partitions"]
         if partitions:
-            print_info(f"Found {len(partitions)} partitions: {', '.join(partitions[:10])}{'...' if len(partitions) > 10 else ''}")
+            print_info(f"Found {len(partitions)} partitions in payload.")
+            p_headers = ["#", "Partition Name"]
+            p_rows = [[str(i + 1), p] for i, p in enumerate(partitions)]
+            print_table(p_headers, p_rows)
+
             sub_opts = [
                 "Dump ALL partitions (full dump)",
                 "Dump core dynamic + boot partitions (system, vendor, product, system_ext, odm, boot, vendor_boot)",
-                "Select custom partitions to dump",
+                "Select custom partitions or ranges (e.g. 1-15, 18-20 or names)",
                 "Cancel",
             ]
             sub_choice = ask_choice("Choose dump mode:", sub_opts, default_idx=0)
@@ -291,12 +296,13 @@ def run_ota_dumper_menu():
                 selected = [p for p in partitions if p in core_names]
                 extract_payload(target_path, selected, IMAGES_DIR)
             elif sub_choice == 2:
-                names = ask_text("Enter comma-separated partition names (e.g. system,vendor,boot)")
-                chosen = [n.strip() for n in names.split(",") if n.strip()]
+                sel_str = ask_text(f"Enter partition numbers/ranges (e.g. 1-15, 18-20) or names (e.g. boot, super) [1-{len(partitions)}]")
+                indices = parse_range_selection(sel_str, len(partitions), partitions)
+                chosen = [partitions[i] for i in indices]
                 if chosen:
                     extract_payload(target_path, chosen, IMAGES_DIR)
                 else:
-                    print_warning("No partitions specified.")
+                    print_warning("No valid partitions selected.")
             else:
                 return
         else:
@@ -330,7 +336,7 @@ def run_ota_dumper_menu():
             menu_opts.append("Extract super.img AND automatically unpack its logical partitions (system, vendor...)")
         menu_opts.extend([
             "Extract core partitions (boot, vendor_boot, init_boot, super, vbmeta, dtbo)",
-            "Select custom partitions to extract (by number or name)",
+            "Select custom partitions or ranges (e.g. 1-15, 18-20 or names)",
             "Cancel",
         ])
 
@@ -348,20 +354,11 @@ def run_ota_dumper_menu():
             core_keywords = ["boot", "vendor_boot", "init_boot", "super", "vbmeta", "dtbo", "recovery"]
             selected_to_extract = [e for e in entries if any(k in e["partition_name"].lower() for k in core_keywords)]
         elif (has_super and choice == 3) or (not has_super and choice == 2):
-            selection_input = ask_text(f"Enter partition numbers (e.g. 1, 3, 5) or names (e.g. boot, super) [1-{len(entries)}]")
+            selection_input = ask_text(f"Enter partition numbers/ranges (e.g. 1-15, 18-20) or names (e.g. boot, super) [1-{len(entries)}]")
             if not selection_input:
                 return
-            chosen_items = [x.strip().lower() for x in selection_input.split(",") if x.strip()]
-            for item in chosen_items:
-                if item.isdigit():
-                    idx = int(item) - 1
-                    if 0 <= idx < len(entries) and entries[idx] not in selected_to_extract:
-                        selected_to_extract.append(entries[idx])
-                else:
-                    clean_name = item.replace(".img", "")
-                    for e in entries:
-                        if e["partition_name"].lower() == clean_name and e not in selected_to_extract:
-                            selected_to_extract.append(e)
+            indices = parse_range_selection(selection_input, len(entries), [e["partition_name"] for e in entries])
+            selected_to_extract = [entries[i] for i in indices]
         else:
             return
 

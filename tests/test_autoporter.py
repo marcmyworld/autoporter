@@ -51,6 +51,27 @@ class TestAutoporter(unittest.TestCase):
         self.assertEqual(parse_size_bytes("500MB"), 524288000)
         self.assertEqual(parse_size_bytes("9126805504"), 9126805504)
 
+    def test_range_selection_parsing(self):
+        """Test 1-15,18-20 range selection, mixed numbers, and names."""
+        from core.ui import parse_range_selection
+        dummy_names = [f"part_{i}" for i in range(1, 26)]  # 25 partitions
+
+        # Test 1-15, 18-20
+        indices = parse_range_selection("1-15, 18-20", len(dummy_names), dummy_names)
+        expected = list(range(0, 15)) + [17, 18, 19]
+        self.assertEqual(indices, expected)
+
+        # Test 1, 3, 5-8
+        indices_mixed = parse_range_selection("1, 3, 5-8", len(dummy_names), dummy_names)
+        self.assertEqual(indices_mixed, [0, 2, 4, 5, 6, 7])
+
+        # Test names and mixed ranges
+        indices_named = parse_range_selection("1-2, part_5, part_10", len(dummy_names), dummy_names)
+        self.assertEqual(indices_named, [0, 1, 4, 9])
+
+        # Test 'all'
+        self.assertEqual(len(parse_range_selection("all", len(dummy_names))), 25)
+
     def test_erofs_unpack_repack_with_contexts(self):
         """Test end-to-end EROFS creation, unpacking to cauldron, context sync, and repacking."""
         # 1. Create a dummy filesystem structure

@@ -34,6 +34,7 @@ from core.ui import (
     ask_choice,
     ask_text,
     ask_confirm,
+    parse_range_selection,
 )
 from core.context_sync import sync_partition_contexts
 
@@ -332,7 +333,7 @@ def run_partition_repacker_menu():
 
     options = [
         f"Repack ALL partitions using original metadata defaults ({len(unpacked)} partitions)",
-        "Select specific partition to customize & repack",
+        "Select specific partition(s) or ranges (e.g. 1-15, 18-20, or single to customize)",
         "Cancel",
     ]
     choice = ask_choice("Choose repacking action:", options, default_idx=0)
@@ -349,19 +350,37 @@ def run_partition_repacker_menu():
         print_success(f"All partitions repacked into {FINALIZED_DIR}")
 
     elif choice == 1:
-        part_idx = ask_choice("Select partition to repack:", [p["name"] for p in unpacked])
-        target_p = unpacked[part_idx]
+        sel_str = ask_text(f"Enter partition numbers/ranges to repack (e.g. 1-15, 18-20, or names) [1-{len(unpacked)}]")
+        if not sel_str:
+            return
+        indices = parse_range_selection(sel_str, len(unpacked), [p["name"] for p in unpacked])
+        if not indices:
+            print_warning("No valid partitions selected.")
+            return
 
-        if target_p["type"] == "boot_image":
-            repack_boot_partition(target_p)
+        if len(indices) == 1:
+            target_p = unpacked[indices[0]]
+            if target_p["type"] == "boot_image":
+                repack_boot_partition(target_p)
+            else:
+                opts = customize_repack_options(target_p)
+                repack_filesystem_partition(
+                    target_p,
+                    fs_type=opts["fs_type"],
+                    compress_algo=opts["compress_algo"],
+                    compress_level=opts["compress_level"],
+                    custom_size_bytes=opts["custom_size"],
+                )
         else:
-            opts = customize_repack_options(target_p)
-            repack_filesystem_partition(
-                target_p,
-                fs_type=opts["fs_type"],
-                compress_algo=opts["compress_algo"],
-                compress_level=opts["compress_level"],
-                custom_size_bytes=opts["custom_size"],
-            )
+            total = len(indices)
+            for i, idx in enumerate(indices):
+                target_p = unpacked[idx]
+                progress_bar(i, total, prefix="Repacking", suffix=target_p["name"])
+                if target_p["type"] == "boot_image":
+                    repack_boot_partition(target_p)
+                else:
+                    repack_filesystem_partition(target_p, fs_type=target_p.get("type", "erofs"))
+            progress_bar(total, total, prefix="Repacking", suffix="Completed!")
+            print_success(f"Repacked {total} selected partition(s) into {FINALIZED_DIR}")
     else:
         return

@@ -33,6 +33,7 @@ from core.ui import (
     ask_choice,
     ask_text,
     ask_confirm,
+    parse_range_selection,
 )
 
 
@@ -202,13 +203,11 @@ def run_super_builder_menu():
     if include_all:
         selected_parts = candidates
     else:
-        indices_str = ask_text(f"Enter partition numbers to include (e.g. 1, 2, 3) [1-{len(candidates)}]")
-        try:
-            chosen = [int(x.strip()) - 1 for x in indices_str.split(",") if x.strip()]
-            selected_parts = [candidates[i] for i in chosen if 0 <= i < len(candidates)]
-        except Exception:
-            print_error("Invalid selection.")
+        indices_str = ask_text(f"Enter partition numbers/ranges to include (e.g. 1-15, 18-20, or names) [1-{len(candidates)}]")
+        if not indices_str:
             return
+        indices = parse_range_selection(indices_str, len(candidates), [p["path"].stem for p in candidates])
+        selected_parts = [candidates[i] for i in indices]
 
     if not selected_parts:
         print_warning("No partitions selected.")

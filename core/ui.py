@@ -213,3 +213,70 @@ def ask_confirm(prompt: str, default: bool = True) -> bool:
         return res in ["y", "yes", "true", "1"]
     except (EOFError, KeyboardInterrupt):
         return default
+
+
+def parse_range_selection(
+    user_input: str,
+    total_count: int,
+    names: Optional[List[str]] = None,
+) -> List[int]:
+    """
+    Parses complex selection inputs like '1-15, 18-20', '1, 3, 5-8', 'boot, vendor', or 'all'.
+    Returns a list of unique 0-based valid indices in original order.
+
+    Examples:
+      - '1-15, 18-20' -> indices 0..14 and 17..19
+      - '1, 3, 5-8'   -> indices 0, 2, 4, 5, 6, 7
+      - 'all' or '*'  -> all indices 0..total_count-1
+      - 'boot, super' -> matched against names list
+    """
+    selected_indices: List[int] = []
+
+    def add_index(idx: int):
+        if 0 <= idx < total_count and idx not in selected_indices:
+            selected_indices.append(idx)
+
+    tokens = [t.strip() for t in user_input.split(",") if t.strip()]
+
+    for token in tokens:
+        # Wildcard 'all' or '*'
+        if token.lower() in ["all", "*"]:
+            for i in range(total_count):
+                add_index(i)
+            continue
+
+        # Range format: '1-15' or '1 - 15'
+        if "-" in token:
+            parts = token.split("-")
+            if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                start = int(parts[0].strip())
+                end = int(parts[1].strip())
+                if start > end:
+                    start, end = end, start
+                for num in range(start, end + 1):
+                    add_index(num - 1)
+                continue
+
+        # Single integer: '5'
+        if token.isdigit():
+            add_index(int(token) - 1)
+            continue
+
+        # Name matching against names list
+        if names:
+            clean_token = token.lower().replace(".img", "").strip()
+            matched = False
+            for i, name in enumerate(names):
+                clean_name = str(name).lower().replace(".img", "").strip()
+                if clean_name == clean_token:
+                    add_index(i)
+                    matched = True
+            # Also allow prefix / partial match if exact didn't match
+            if not matched:
+                for i, name in enumerate(names):
+                    clean_name = str(name).lower().replace(".img", "").strip()
+                    if clean_name.startswith(clean_token) or clean_token.startswith(clean_name):
+                        add_index(i)
+
+    return selected_indices
+
