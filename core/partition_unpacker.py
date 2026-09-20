@@ -37,14 +37,74 @@ from core.ui import (
 )
 
 
+def normalize_partition_slots(output_dir: Path, candidate_images: Optional[List[Path]] = None) -> List[Path]:
+    """
+    Cleans up 0-byte slot stub images (e.g. system_b.img) and renames non-empty
+    slot-suffixed images (_a or _b) to clean partition names without slot suffixes
+    (e.g. system_a.img -> system.img).
+    """
+    if candidate_images is None:
+        candidate_images = list(output_dir.glob("*.img"))
+
+    # Step 1: Remove all 0-byte images
+    valid_images = []
+    for img_path in candidate_images:
+        if not img_path.exists():
+            continue
+        if img_path.stat().st_size == 0:
+            try:
+                img_path.unlink()
+            except Exception:
+                pass
+        else:
+            valid_images.append(img_path)
+
+    # Step 2: Normalize _a and _b suffixes for remaining images
+    normalized: List[Path] = []
+    for img_path in sorted(valid_images, key=lambda p: p.name):
+        if not img_path.exists() or img_path.stat().st_size == 0:
+            continue
+        stem = img_path.stem
+        if stem.endswith("_a") or stem.endswith("_b"):
+            base_name = stem[:-2]
+            target_path = output_dir / f"{base_name}.img"
+            if target_path.exists() and target_path.resolve() != img_path.resolve():
+                if target_path.stat().st_size == 0:
+                    target_path.unlink()
+                    shutil.move(str(img_path), str(target_path))
+                    final_path = target_path
+                else:
+                    if img_path.stat().st_size >= target_path.stat().st_size:
+                        target_path.unlink()
+                        shutil.move(str(img_path), str(target_path))
+                        final_path = target_path
+                    else:
+                        img_path.unlink()
+                        final_path = target_path
+            else:
+                shutil.move(str(img_path), str(target_path))
+                final_path = target_path
+
+            if final_path not in normalized:
+                normalized.append(final_path)
+        else:
+            if img_path not in normalized:
+                normalized.append(img_path)
+
+    return sorted(normalized, key=lambda p: p.name)
+
+
 def list_available_images() -> List[Dict[str, any]]:
     """Lists all available images in the images/ directory."""
     images = []
     if not IMAGES_DIR.exists():
         return images
 
+    # Normalize any slot suffixes and remove 0-byte stub files
+    normalize_partition_slots(IMAGES_DIR)
+
     for img_path in sorted(IMAGES_DIR.glob("*.img")):
-        if img_path.is_file():
+        if img_path.is_file() and img_path.stat().st_size > 0:
             ftype = detect_file_type(img_path)
             images.append({
                 "path": img_path,
@@ -100,7 +160,10 @@ def unpack_super_image(super_path: Path, output_dir: Path = IMAGES_DIR) -> List[
             res = subprocess.run([imgkit_tool, "unpack", "-i", str(super_path), "-o", str(output_dir)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     after_imgs = {p.resolve() for p in output_dir.glob("*.img")}
-    new_imgs = [p for p in sorted(list(after_imgs - before_imgs), key=lambda x: x.name) if p.name != super_path.name]
+    raw_new_imgs = [p for p in sorted(list(after_imgs - before_imgs), key=lambda x: x.name) if p.name != super_path.name]
+
+    # Prune 0-byte images and normalize _a / _b slot suffixes
+    new_imgs = normalize_partition_slots(output_dir, raw_new_imgs)
     print_success(f"Super image unpacked. Extracted {len(new_imgs)} logical partition image(s) to {output_dir}")
     return new_imgs
 

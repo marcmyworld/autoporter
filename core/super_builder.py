@@ -50,14 +50,14 @@ def get_candidate_super_partitions() -> List[Dict[str, any]]:
     if FINALIZED_DIR.exists():
         for p in FINALIZED_DIR.glob("*.img"):
             stem = p.stem.lower()
-            if not any(stem.startswith(x) for x in non_super_names):
+            if p.stat().st_size > 0 and not any(stem.startswith(x) for x in non_super_names):
                 candidates[p.stem] = {"path": p, "source": "finalized", "size": p.stat().st_size}
 
     # Check images/ for partitions not in finalized
     if IMAGES_DIR.exists():
         for p in IMAGES_DIR.glob("*.img"):
             stem = p.stem.lower()
-            if stem not in candidates and not any(stem.startswith(x) for x in non_super_names) and stem != "super":
+            if p.stat().st_size > 0 and stem not in candidates and not any(stem.startswith(x) for x in non_super_names) and stem != "super":
                 candidates[p.stem] = {"path": p, "source": "images", "size": p.stat().st_size}
 
     return sorted(candidates.values(), key=lambda x: x["path"].stem)
