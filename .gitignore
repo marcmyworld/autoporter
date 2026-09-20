@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary and log files
+*.log
+*.tmp
+*.bak
+
+# Ignore large ROM archives, raw images, and unpacked trees
+input/*
+!input/.gitkeep
+
+images/*
+!images/.gitkeep
+
+cauldron/*
+!cauldron/.gitkeep
+
+finalized/*
+!finalized/.gitkeep
+
+output/*
+!output/.gitkeep
